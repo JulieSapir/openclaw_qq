@@ -18,7 +18,7 @@
 
 > [!IMPORTANT]
 > **官方交流论坛（唯一）：** https://aiya.de5.net/c/25-category/25  
-> 不建立 QQ 群；问题反馈、配置经验、更新公告统一在论坛沉淀，便于检索和追踪。
+> 问题反馈、配置经验、更新公告统一在论坛沉淀，便于检索和追踪。
 
 > [!NOTE]
 > 本仓库主 README 自即日起仅维护中文。历史英文 README 已归档：`docs/archive/README.en.legacy.md`。
