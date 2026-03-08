@@ -1304,6 +1304,15 @@ function buildQQHiddenMetaBlock(params: {
     return `${lines.join("\n")}\n\n`;
 }
 
+function resolveReplySessionSourceLabel(activeTempSlot: string | null): string {
+    const cleaned = sanitizeTempSlotName(activeTempSlot || "");
+    return cleaned ? `会话${cleaned}` : "主会话";
+}
+
+function buildReplySessionSourcePrefix(activeTempSlot: string | null): string {
+    return `(from ${resolveReplySessionSourceLabel(activeTempSlot)})`;
+}
+
 async function sendLongTextAsForwardMessage(params: {
     client: OneBotClient;
     groupId: number;
@@ -1463,7 +1472,51 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
         // @ts-ignore
         deleteMessage: true,
     },
-    configSchema: buildChannelConfigSchema(QQConfigSchema),
+    configSchema: (() => {
+        const baseSchema = buildChannelConfigSchema(QQConfigSchema) as any;
+        return {
+            ...baseSchema,
+            uiHints: {
+                ...(baseSchema.uiHints || {}),
+                maxRetries: {
+                    label: "自动重试次数",
+                    help: "默认 0（关闭）。模型报错或返回空内容时，最多再试几次；次数越大越稳，但等待也会更久。",
+                },
+                retryDelayMs: {
+                    label: "重试间隔（毫秒）",
+                    help: "默认预置 3000ms；仅在自动重试次数大于 0 时生效。",
+                },
+                fastFailErrors: {
+                    label: "快速跳过错误关键词",
+                    help: "默认关闭（空数组）。填写如 401、Unauthorized、余额不足 后，命中时会直接跳过当前模型。",
+                },
+                queueDebounceMs: {
+                    label: "同会话消息合并窗口（毫秒）",
+                    help: "默认 0（关闭）。大于 0 时，短时间连续发来的多条消息会先合并再处理。",
+                },
+                interruptOnNewMessage: {
+                    label: "新消息打断旧回复",
+                    help: "默认关闭。同一会话里来了更新的消息时，可优先切换去处理新消息。",
+                },
+                injectGatewayMeta: {
+                    label: "注入隐藏 QQ 网关上下文",
+                    help: "默认关闭。开启后会给模型注入不可见的会话来源/触发方式等上下文。",
+                },
+                enrichReplyForwardContext: {
+                    label: "解析 reply/forward 多层上下文",
+                    help: "默认开启。会递归展开引用和合并转发内容，方便模型理解‘你在回谁、上下文是什么’。",
+                },
+                forwardLongReplyThreshold: {
+                    label: "长回复转合并转发阈值",
+                    help: "大于这个字符数时，自动改用 QQ 合并转发发送。默认 0，表示关闭。",
+                },
+                showReplySessionSource: {
+                    label: "回复前标注来源会话",
+                    help: "默认开启。回复前会自动加上 `(from 主会话)` 或 `(from 会话xxx)`，特别适合用了 /临时 之后快速分辨当前回复来自哪个会话。",
+                },
+            },
+        };
+    })(),
     config: {
         listAccountIds: (cfg) => {
             // @ts-ignore
@@ -2385,6 +2438,26 @@ ${current}
                     let deliveredAnything = false;
                     let dispatcherError: any = null;
                     let currentRunState: { isStale: () => boolean } | null = null;
+                    let pendingReplySessionSourcePrefix = config.showReplySessionSource
+                        ? buildReplySessionSourcePrefix(activeTempSlot)
+                        : "";
+
+                    const takeReplySessionSourcePrefix = (): string => {
+                        if (!pendingReplySessionSourcePrefix) return "";
+                        const prefix = pendingReplySessionSourcePrefix;
+                        pendingReplySessionSourcePrefix = "";
+                        return prefix;
+                    };
+
+                    const sendSessionSourcePrefixOnly = async (): Promise<boolean> => {
+                        const prefix = takeReplySessionSourcePrefix();
+                        if (!prefix || currentRunState?.isStale()) return false;
+                        if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${prefix}`);
+                        else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, prefix);
+                        else client.sendPrivateMsg(userId, prefix);
+                        return true;
+                    };
+
                     const deliver = async (payload: any) => {
                         if (currentRunState?.isStale()) return;
                         const isTextFailure = payload.text && (
@@ -2400,6 +2473,12 @@ ${current}
                         const send = async (msg: string): Promise<boolean> => {
                             if (currentRunState?.isStale()) return false;
                             let processed = msg;
+                            const sessionPrefix = takeReplySessionSourcePrefix();
+                            if (sessionPrefix) {
+                                processed = processed.trim()
+                                    ? `${sessionPrefix}\n${processed}`
+                                    : sessionPrefix;
+                            }
                             if (config.formatMarkdown) processed = stripMarkdown(processed);
                             if (config.antiRiskMode) processed = processAntiRisk(processed);
                             processed = await resolveInlineCqRecord(processed);
@@ -2446,6 +2525,10 @@ ${current}
                             if (sentText) deliveredAnything = true;
                         }
                         if (payload.files) {
+                            if (!payload.text && pendingReplySessionSourcePrefix) {
+                                const sentPrefix = await sendSessionSourcePrefixOnly();
+                                if (sentPrefix) deliveredAnything = true;
+                            }
                             for (const f of payload.files) {
                                 if (currentRunState?.isStale()) return;
                                 if (f.url) {
