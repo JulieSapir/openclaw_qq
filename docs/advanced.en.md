@@ -194,7 +194,7 @@ If you run multiple DM channels at the same time (for example Telegram + QQ + Fe
 ```
 
 Why: with `dmScope=main` (default), direct chats can collapse into the main session key (`agent:main:main`), which may mix context across channels.
-This plugin also namespaces QQ private `fromId` as `qq:user:<id>` to further reduce cross-channel user-id collisions.
+Current versions now follow OpenClaw's official session-key style again: QQ direct-chat peer ids use the plain QQ number. If you want strict cross-channel isolation, prefer `per-channel-peer`.
 
 > If you intentionally want cross-platform shared context, choose another scope. For strict isolation, prefer `per-channel-peer`.
 

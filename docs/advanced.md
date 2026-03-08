@@ -202,7 +202,7 @@ openclaw setup qq
 ```
 
 原因：OpenClaw 在 `dmScope=main`（默认）下会把 direct chat 汇聚到主会话键（`agent:main:main`），多渠道并行时可能出现上下文混用。
-本插件还对 QQ 私聊 `fromId` 增加了命名空间前缀（`qq:user:<id>`），可进一步避免不同渠道用户 ID 冲突。
+当前版本已回归 OpenClaw 官方 session 命名风格：QQ 私聊 peer id 直接使用纯 QQ 号；若你要严格隔离不同渠道的私聊上下文，优先使用 `per-channel-peer`。
 
 > 如果你需要“同一个人跨平台共享上下文”，可改为其他策略；若要严格隔离，优先 `per-channel-peer`。
 
