@@ -4,7 +4,11 @@
 
 ## A. Required
 
-- `wsUrl`: OneBot WebSocket endpoint.
+- `transport`: transport mode. Use `ws` for reverse WebSocket, or `http` for HTTP API + plugin webhook.
+- `wsUrl`: OneBot WebSocket endpoint when `transport = "ws"`.
+- `httpUrl`: OneBot HTTP API endpoint when `transport = "http"`.
+- `httpWebhookPath`: plugin webhook path that receives OneBot events in HTTP mode.
+- `httpWebhookToken`: optional webhook token for HTTP mode; falls back to `accessToken` when omitted.
 - `accessToken`: OneBot token (if auth is enabled).
 
 ## B. Trigger & Access Control
@@ -70,6 +74,24 @@
       "queueDebounceMs": 0,
       "injectGatewayMeta": false,
       "interruptOnNewMessage": false
+    }
+  }
+}
+```
+
+## HTTP Mode Example
+
+```json
+{
+  "channels": {
+    "qq": {
+      "transport": "http",
+      "httpUrl": "http://127.0.0.1:3000",
+      "httpWebhookPath": "/plugins/qq/default/onebot",
+      "httpWebhookToken": "your_webhook_token",
+      "accessToken": "your_token",
+      "requireMention": true,
+      "admins": "10000001"
     }
   }
 }

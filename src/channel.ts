@@ -15,6 +15,8 @@ import {
     type ReplyPayload,
     applyAccountNameToChannelSection,
     migrateBaseNameToDefaultAccount,
+    normalizeWebhookPath,
+    registerPluginHttpRoute,
 } from "openclaw/plugin-sdk";
 import { OneBotClient } from "./client.js";
 import { QQConfigSchema, type QQConfig } from "./config.js";
@@ -41,6 +43,34 @@ interface SessionQueue {
 }
 
 const sessionQueues = new Map<string, SessionQueue>();
+
+function normalizeOneBotHttpToken(raw: string | undefined | null): string {
+    const value = String(raw || "").trim();
+    if (!value) return "";
+    return value.toLowerCase().startsWith("bearer ") ? value.slice(7).trim() : value;
+}
+
+function resolveOneBotHttpAuth(headers: Record<string, unknown>, expectedToken: string | undefined): boolean {
+    const token = normalizeOneBotHttpToken(expectedToken);
+    if (!token) return true;
+    const headerValue = headers["authorization"] ?? headers["x-onebot-token"] ?? headers["x-access-token"];
+    const actual = Array.isArray(headerValue) ? String(headerValue[0] || "") : String(headerValue || "");
+    return normalizeOneBotHttpToken(actual) == token;
+}
+
+async function readOneBotHttpBody(req: any): Promise<any> {
+    let raw = "";
+    for await (const chunk of req) {
+        raw += chunk.toString("utf8");
+    }
+    if (!raw.trim()) return null;
+    return JSON.parse(raw);
+}
+
+function resolveQQHttpWebhookPath(accountId: string, config: QQConfig): string {
+    const configured = typeof config.httpWebhookPath === "string" ? config.httpWebhookPath.trim() : "";
+    return normalizeWebhookPath(configured || `/plugins/qq/${accountId}/onebot`);
+}
 
 async function drainSessionQueue(sessionKey: string, config: QQConfig, sendMessageFn: (msg: string) => void) {
     const q = sessionQueues.get(sessionKey);
@@ -1883,12 +1913,14 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             await ensureLegacyQQSessionMigration();
             const config = account.config;
             accountConfigs.set(account.accountId, config);
+            const transportMode = config.transport === "http" ? "http" : "ws";
             const adminIds = [...new Set(parseIdListInput(config.admins as string | number | Array<string | number> | undefined))];
             const allowedGroupIds = [...new Set(parseIdListInput(config.allowedGroups as string | number | Array<string | number> | undefined))];
             const blockedUserIds = [...new Set(parseIdListInput(config.blockedUsers as string | number | Array<string | number> | undefined))];
             const blockedNotifyCooldownMs = Math.max(0, Number(config.blockedNotifyCooldownMs ?? 10000));
 
-            if (!config.wsUrl) throw new Error("QQ: wsUrl is required");
+            if (transportMode === "ws" && !config.wsUrl) throw new Error("QQ: wsUrl is required for ws transport");
+            if (transportMode === "http" && !config.httpUrl) throw new Error("QQ: httpUrl is required for http transport");
 
             const existingLiveClient = clients.get(account.accountId);
             if (existingLiveClient?.isConnected()) {
@@ -1922,8 +1954,56 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
 
             const client = new OneBotClient({
                 wsUrl: config.wsUrl,
+                httpUrl: config.httpUrl,
                 accessToken: config.accessToken,
+                transport: transportMode,
             });
+
+            let unregisterHttpRoute: (() => void) | null = null;
+            if (transportMode === "http") {
+                const webhookPath = resolveQQHttpWebhookPath(account.accountId, config);
+                unregisterHttpRoute = registerPluginHttpRoute({
+                    path: webhookPath,
+                    auth: "plugin",
+                    match: "exact",
+                    pluginId: "qq",
+                    source: "qq-http-webhook",
+                    accountId: account.accountId,
+                    handler: async (req, res) => {
+                        if (req.method !== "POST") {
+                            res.statusCode = 405;
+                            res.setHeader("Allow", "POST");
+                            res.end("Method Not Allowed");
+                            return true;
+                        }
+                        const webhookToken = typeof config.httpWebhookToken === "string" && config.httpWebhookToken.trim()
+                            ? config.httpWebhookToken.trim()
+                            : config.accessToken;
+                        if (!resolveOneBotHttpAuth(req.headers as Record<string, unknown>, webhookToken)) {
+                            res.statusCode = 401;
+                            res.end("unauthorized");
+                            return true;
+                        }
+                        try {
+                            const payload = await readOneBotHttpBody(req);
+                            if (!payload || typeof payload !== "object") {
+                                res.statusCode = 400;
+                                res.end("invalid payload");
+                                return true;
+                            }
+                            client.emitEvent(payload as any);
+                            res.statusCode = 200;
+                            res.end("ok");
+                            return true;
+                        } catch (err) {
+                            res.statusCode = 400;
+                            res.end(String(err));
+                            return true;
+                        }
+                    },
+                });
+                console.log(`[QQ] HTTP webhook registered for account ${account.accountId}: ${webhookPath}`);
+            }
 
             const isStaleGeneration = () => accountStartGeneration.get(account.accountId) !== accountGen;
 
@@ -3024,6 +3104,7 @@ ${current}
                 if (accountStartGeneration.get(account.accountId) === accountGen) {
                     accountStartGeneration.set(account.accountId, accountGen + 1);
                 }
+                unregisterHttpRoute?.();
                 client.disconnect();
                 clients.delete(account.accountId);
                 accountConfigs.delete(account.accountId);
