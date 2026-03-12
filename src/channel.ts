@@ -202,16 +202,80 @@ function cleanCQCodes(text: string | undefined): string {
 function splitLongText(input: string, maxLength = 2800): string[] {
     const text = (input || "").trim();
     if (!text) return [];
-    if (text.length <= maxLength) return [text];
+    const safeMaxLength = Number.isFinite(maxLength) && maxLength > 0 ? Math.floor(maxLength) : 2800;
+    
+    const normalized = text
+        .replace(/\n+/g, '\n')
+        .replace(/\s+/g, ' ') 
+        .trim();
+    
+    if (normalized.length <= safeMaxLength) return [normalized];
+    
     const chunks: string[] = [];
-    let rest = text;
-    while (rest.length > maxLength) {
-        let cut = rest.lastIndexOf("\n", maxLength);
-        if (cut < Math.floor(maxLength * 0.5)) cut = maxLength;
-        chunks.push(rest.slice(0, cut));
+    let rest = normalized;
+    
+    while (rest.length > safeMaxLength) {
+        let cut = safeMaxLength;
+        
+        // 优先换行符截断
+        const lastNewline = rest.lastIndexOf("\n", safeMaxLength);
+        if (lastNewline > Math.floor(safeMaxLength * 0.5)) {
+            cut = lastNewline;
+        } else {
+            // 特殊符号处截断
+            const sentencePattern = /[。！？；…\n\.!?;]/g;
+            let bestCut = -1;
+            let match;
+            while ((match = sentencePattern.exec(rest.slice(0, safeMaxLength + 50))) !== null) {
+                if (match.index > safeMaxLength) break;
+                if (match.index > Math.floor(safeMaxLength * 0.5)) {
+                    bestCut = match.index + 1;
+                }
+            }
+            
+            if (bestCut > 0) {
+                cut = bestCut;
+            } else {
+                // 空格处
+                const lastSpace = rest.lastIndexOf(' ', safeMaxLength);
+                if (lastSpace > Math.floor(safeMaxLength * 0.7)) {
+                    cut = lastSpace;
+                } else {
+                    // 可能存在的语气词：如果截断点后紧跟 <5个字符+标点
+                    const afterCut = rest.slice(cut, cut + 10).trim();
+                    if (afterCut.length > 0 && afterCut.length < 5 && /^[^\w\s]/.test(afterCut)) {
+                        // 向前找最后一个句子边界
+                        const prevSentence = rest.lastIndexOf('。', cut - 1);
+                        const prevQuestion = rest.lastIndexOf('？', cut - 1);
+                        const prevExclaim = rest.lastIndexOf('！', cut - 1);
+                        const betterCut = Math.max(prevSentence, prevQuestion, prevExclaim);
+                        if (betterCut > Math.floor(safeMaxLength * 0.4)) {
+                            cut = betterCut + 1;
+                        }
+                    }
+                }
+            }
+        }
+        
+        chunks.push(rest.slice(0, cut).trim());
         rest = rest.slice(cut).trimStart();
     }
-    if (rest) chunks.push(rest);
+    
+    if (rest.trim()) chunks.push(rest.trim());
+    
+    // 合并过短的尾块
+    if (chunks.length > 1) {
+        const lastChunk = chunks[chunks.length - 1];
+        const prevChunk = chunks[chunks.length - 2];
+        
+        if (lastChunk.length < 20 && !/[。！？]$/.test(lastChunk)) {
+            if (prevChunk.length + lastChunk.length + 1 <= safeMaxLength) {
+                chunks[chunks.length - 2] = `${prevChunk} ${lastChunk}`;
+                chunks.pop();
+            }
+        }
+    }
+    
     return chunks;
 }
 
@@ -1109,6 +1173,40 @@ function parseUserIdFromTarget(to: string): number | null {
     return Number.isFinite(n) ? n : null;
 }
 
+function buildAckTargetFromContext(params: {
+    isGroup: boolean;
+    isGuild: boolean;
+    groupId?: number;
+    guildId?: string;
+    channelId?: string;
+    userId?: number;
+}): string | null {
+    if (params.isGroup) {
+        return params.groupId !== undefined && params.groupId !== null
+            ? `group:${params.groupId}`
+            : null;
+    }
+    if (params.isGuild) {
+        return params.guildId && params.channelId
+            ? `guild:${params.guildId}:${params.channelId}`
+            : null;
+    }
+    return params.userId !== undefined && params.userId !== null
+        ? `user:${params.userId}`
+        : null;
+}
+
+async function sendChunkWithAckRetry(client: OneBotClient, to: string, message: OneBotMessage | string, maxRetries = 2): Promise<boolean> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const ack = await sendOneBotMessageWithAck(client, to, message);
+        if (ack.ok) return true;
+        if (attempt < maxRetries) {
+            await sleep(200 * (attempt + 1));
+        }
+    }
+    return false;
+}
+
 function guessFileName(input: string): string {
     const local = toLocalPathIfAny(input);
     const name = path.basename(local || input.split("?")[0].split("#")[0]);
@@ -1220,6 +1318,7 @@ function splitMessage(text: string, limit: number): string[] {
     }
     return chunks;
 }
+
 
 function buildQQHiddenMetaBlock(params: {
     accountId: string;
@@ -2355,15 +2454,31 @@ ${current}
                                 if (sentAsForward) return true;
                             }
 
-                            const chunks = splitMessage(processed, config.maxMessageLength || 4000);
+                            const chunks = splitLongText(processed, config.maxMessageLength || 4000);
+                            const chunkTarget = buildAckTargetFromContext({
+                                isGroup,
+                                isGuild,
+                                groupId,
+                                guildId,
+                                channelId,
+                                userId,
+                            });
                             for (let i = 0; i < chunks.length; i++) {
                                 if (currentRunState?.isStale()) return i > 0;
                                 let chunk = chunks[i];
                                 if (isGroup && i === 0) chunk = `[CQ:at,qq=${userId}] ${chunk}`;
 
-                                if (isGroup) client.sendGroupMsg(groupId, chunk);
-                                else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, chunk);
-                                else client.sendPrivateMsg(userId, chunk);
+                                if (chunkTarget) {
+                                    const sent = await sendChunkWithAckRetry(client, chunkTarget, chunk, 2);
+                                    if (!sent) {
+                                        console.warn(`[QQ] Failed to send chunk with ACK after retries: target=${chunkTarget} index=${i + 1}/${chunks.length}`);
+                                        return i > 0;
+                                    }
+                                } else {
+                                    // 目标字段异常时直接中止，避免继续发送造成不可预期乱序
+                                    console.warn(`[QQ] Invalid chunk target context, abort chunk send: isGroup=${String(isGroup)} isGuild=${String(isGuild)} groupId=${String(groupId)} guildId=${String(guildId)} channelId=${String(channelId)} userId=${String(userId)}`);
+                                    return i > 0;
+                                }
 
                                 if (!isGuild && config.enableTTS && i === 0 && chunk.length < 100) {
                                     const tts = chunk.replace(/\[CQ:.*?\]/g, "").trim();
@@ -2373,7 +2488,13 @@ ${current}
                                     }
                                 }
 
-                                if (chunks.length > 1 && config.rateLimitMs > 0) await sleep(config.rateLimitMs);
+                                if (chunks.length > 1 && i < chunks.length - 1) {
+                                    const configuredGap = Number(config.rateLimitMs ?? 0);
+                                    const interChunkGapMs = Number.isFinite(configuredGap)
+                                        ? Math.max(50, configuredGap)
+                                        : 50;
+                                    await sleep(interChunkGapMs);
+                                }
                             }
                             return chunks.length > 0;
                         };
