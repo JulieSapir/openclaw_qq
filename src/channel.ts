@@ -204,15 +204,10 @@ function splitLongText(input: string, maxLength = 2800): string[] {
     if (!text) return [];
     const safeMaxLength = Number.isFinite(maxLength) && maxLength > 0 ? Math.floor(maxLength) : 2800;
     
-    const normalized = text
-        .replace(/\n+/g, '\n')
-        .replace(/\s+/g, ' ') 
-        .trim();
-    
-    if (normalized.length <= safeMaxLength) return [normalized];
+    if (text.length <= safeMaxLength) return [text];
     
     const chunks: string[] = [];
-    let rest = normalized;
+    let rest = text;
     
     while (rest.length > safeMaxLength) {
         let cut = safeMaxLength;
