@@ -1244,6 +1244,32 @@ function buildEffectiveFromId(baseFromId: string, tempSlot: string | null): stri
     return `${baseFromId}::tmp:${tempSlot}`;
 }
 
+type SessionCommandTarget = {
+    slot: string | null;
+    label: string;
+};
+
+function listSessionCommandTargets(threadKey: string): SessionCommandTarget[] {
+    return [
+        { slot: null, label: "默认会话" },
+        ...getTempSessionHistory(threadKey).map((slot) => ({ slot, label: slot })),
+    ];
+}
+
+function resolveSessionCommandTargetByIndex(threadKey: string, index: number): SessionCommandTarget | null {
+    if (!Number.isInteger(index) || index < 1) return null;
+    return listSessionCommandTargets(threadKey)[index - 1] || null;
+}
+
+function renderSessionCommandTargetList(threadKey: string, activeTempSlot: string | null): string {
+    return listSessionCommandTargets(threadKey)
+        .map((target, idx) => {
+            const isCurrent = target.slot ? target.slot === activeTempSlot : !activeTempSlot;
+            return `${idx + 1}. ${target.label}${isCurrent ? " (当前)" : ""}`;
+        })
+        .join("\n");
+}
+
 function getTempSessionHistory(threadKey: string): string[] {
     return tempSessionHistory.get(threadKey) || [];
 }
@@ -1962,7 +1988,7 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                 },
                 showReplySessionSource: {
                     label: "回复前标注来源会话",
-                    help: "默认开启。回复前会自动加上 `(from 主会话)` 或 `(from 会话xxx)`，特别适合用了 /临时 之后快速分辨当前回复来自哪个会话。",
+                    help: "默认开启。回复前会自动加上 `(from 主会话)` 或 `(from 会话xxx)`，特别适合用了 /会话 之后快速分辨当前回复来自哪个会话。",
                 },
                 keywordOnlyTrigger: {
                     label: "群聊仅关键词触发",
@@ -2327,7 +2353,7 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                         const rawPreview = typeof event.raw_message === "string"
                             ? event.raw_message.replace(/\s+/g, " ").slice(0, 160)
                             : "";
-                        if (rawPreview.includes("/") || rawPreview.includes("临时")) {
+                        if (rawPreview.includes("/") || rawPreview.includes("临时") || rawPreview.includes("会话")) {
                             console.log(
                                 `[QQEVT] inbound type=${event.message_type ?? "-"} group=${event.group_id ?? "-"} user=${event.user_id ?? "-"} msg="${rawPreview}"`
                             );
@@ -2531,16 +2557,16 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                         if (!isAdmin) return;
                         text = "/newsession";
                     }
-                    else if (isGroup && /^\/(临时|tmp|退出临时|exittemp|临时状态|tmpstatus|临时列表|tmplist|临时结束|tmpend|临时重命名|tmprename)\b/i.test(inlineCommand)) {
+                    else if (isGroup && /^\/(会话重命名|临时重命名|tmprename|会话结束|临时结束|tmpend|会话列表|临时列表|tmplist|会话状态|临时状态|tmpstatus|退出会话|退出临时|exittemp|会话|临时|tmp)(?=\s|$)/i.test(inlineCommand)) {
                         if (!isAdmin) {
-                            console.warn(`[QQCMD] temp command denied: non-admin user=${userId} group=${groupId ?? "-"}`);
+                            console.warn(`[QQCMD] session command denied: non-admin user=${userId} group=${groupId ?? "-"}`);
                             if (config.notifyNonAdminBlocked) {
-                                client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] 当前仅管理员可使用临时会话命令。`);
+                                client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] 当前仅管理员可使用会话命令。`);
                             }
                             return;
                         }
                         text = inlineCommand;
-                        console.log(`[QQCMD] temp command accepted user=${userId} group=${groupId ?? "-"}`);
+                        console.log(`[QQCMD] session command accepted user=${userId} group=${groupId ?? "-"}`);
                     }
                     else if (isGroup && /^\/grok_draw\b/i.test(inlineCommand)) {
                         if (!isAdmin) return;
@@ -2562,57 +2588,89 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                                 ? `guild:${guildId}:${channelId}`
                                 : String(userId);
 
-                        if (cmd === '/临时' || cmd === '/tmp') {
-                            const requested = sanitizeTempSlotName(parts.slice(1).join(' '));
-                            if (!requested) {
+                        if (cmd === '/会话' || cmd === '/临时' || cmd === '/tmp') {
+                            const rawArg = parts.slice(1).join(' ').trim();
+                            if (!rawArg) {
                                 const current = activeTempSlot
-                                    ? `当前临时会话: ${activeTempSlot}`
-                                    : "当前未启用临时会话。";
+                                    ? `当前会话: ${activeTempSlot}`
+                                    : "当前会话: 默认会话";
                                 const usage = `[OpenClawd QQ]
 ${current}
 用法:
-/临时 <名称> 进入临时会话
-/临时重命名 <新名称> 重命名当前临时会话
-/退出临时 回到主会话
-/临时状态 查看当前会话
-/临时列表 查看已有临时会话
-/临时结束 结束当前临时会话`;
+/会话 <名称> 新建或进入会话
+/会话 <序号> 切换到已有会话
+/会话重命名 <新名称> 重命名当前会话
+/退出会话 回到默认会话
+/会话状态 查看当前会话
+/会话列表 查看已有会话
+/会话结束 结束当前会话`;
                                 if (isGroup) client.sendGroupMsg(groupId, usage); else client.sendPrivateMsg(userId, usage);
+                                return;
+                            }
+                            if (/^\d+$/.test(rawArg)) {
+                                const requestedIndex = Number(rawArg);
+                                const selectedTarget = resolveSessionCommandTargetByIndex(threadSessionKey, requestedIndex);
+                                if (!selectedTarget) {
+                                    const maxIndex = listSessionCommandTargets(threadSessionKey).length;
+                                    const msg = `[OpenClawd QQ]\n未找到序号 ${requestedIndex} 对应的会话。\n当前可用序号：1-${maxIndex}\n可先用 /会话列表 查看。`;
+                                    if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
+                                    return;
+                                }
+                                const isAlreadyActive = selectedTarget.slot
+                                    ? selectedTarget.slot === activeTempSlot
+                                    : !activeTempSlot;
+                                if (isAlreadyActive) {
+                                    const msg = `[OpenClawd QQ]\n当前已在${selectedTarget.slot ? `会话: ${selectedTarget.label}` : "默认会话"}。`;
+                                    if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
+                                    return;
+                                }
+                                await setTempSessionSlot(threadSessionKey, selectedTarget.slot);
+                                activeTempSlot = selectedTarget.slot;
+                                const msg = selectedTarget.slot
+                                    ? `[OpenClawd QQ]\n✅ 已切换到会话: ${selectedTarget.label}`
+                                    : `[OpenClawd QQ]\n✅ 已切换到默认会话。`;
+                                if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
+                                return;
+                            }
+                            const requested = sanitizeTempSlotName(rawArg);
+                            if (!requested) {
+                                const msg = `[OpenClawd QQ]\n会话名称不能为空。\n用法：/会话 <名称>`;
+                                if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                                 return;
                             }
                             await setTempSessionSlot(threadSessionKey, requested);
                             activeTempSlot = requested;
                             const msg = `[OpenClawd QQ]
-✅ 已进入临时会话: ${requested}
-后续消息将写入临时会话，不占用主会话。\n可用命令：/临时状态 /临时列表 /临时重命名 /退出临时 /临时结束`;
+✅ 已进入会话: ${requested}
+后续消息将写入该会话，不占用默认会话。\n可用命令：/会话状态 /会话列表 /会话重命名 /退出会话 /会话结束`;
                             if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                             return;
                         }
 
-                        if (cmd === '/临时重命名' || cmd === '/tmprename') {
+                        if (cmd === '/会话重命名' || cmd === '/临时重命名' || cmd === '/tmprename') {
                             if (!activeTempSlot) {
-                                const msg = `[OpenClawd QQ]\n当前未在临时会话中，无法重命名。\n先用 /临时 <名称> 进入临时会话。`;
+                                const msg = `[OpenClawd QQ]\n当前在默认会话中，无法重命名。\n先用 /会话 <名称> 进入命名会话。`;
                                 if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                                 return;
                             }
                             const renamed = sanitizeTempSlotName(parts.slice(1).join(' '));
                             if (!renamed) {
-                                const msg = `[OpenClawd QQ]\n用法：/临时重命名 <新名称>`;
+                                const msg = `[OpenClawd QQ]\n用法：/会话重命名 <新名称>`;
                                 if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                                 return;
                             }
                             const oldName = activeTempSlot;
                             await setTempSessionSlot(threadSessionKey, renamed);
                             activeTempSlot = renamed;
-                            const msg = `[OpenClawd QQ]\n✅ 临时会话已重命名：${oldName} -> ${renamed}`;
+                            const msg = `[OpenClawd QQ]\n✅ 会话已重命名：${oldName} -> ${renamed}`;
                             if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                             return;
                         }
 
-                        if (cmd === '/退出临时' || cmd === '/exittemp') {
+                        if (cmd === '/退出会话' || cmd === '/退出临时' || cmd === '/exittemp') {
                             if (!activeTempSlot) {
                                 const msg = `[OpenClawd QQ]
-当前未在临时会话中。`;
+当前已在默认会话中。`;
                                 if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                                 return;
                             }
@@ -2620,48 +2678,46 @@ ${current}
                             await setTempSessionSlot(threadSessionKey, null);
                             activeTempSlot = null;
                             const msg = `[OpenClawd QQ]
-✅ 已退出临时会话: ${prev}
-当前已回到主会话。`;
+✅ 已退出会话: ${prev}
+当前已回到默认会话。`;
                             if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                             return;
                         }
 
-                        if (cmd === '/临时状态' || cmd === '/tmpstatus') {
+                        if (cmd === '/会话状态' || cmd === '/临时状态' || cmd === '/tmpstatus') {
                             const effective = buildEffectiveFromId(baseFromIdForCommand, activeTempSlot);
                             const msg = `[OpenClawd QQ]
-当前会话: ${activeTempSlot ? `临时(${activeTempSlot})` : '主会话'}
+当前会话: ${activeTempSlot ? `会话(${activeTempSlot})` : '默认会话'}
 会话键ID: ${effective}`;
                             if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                             return;
                         }
 
-                        if (cmd === '/临时列表' || cmd === '/tmplist') {
+                        if (cmd === '/会话列表' || cmd === '/临时列表' || cmd === '/tmplist') {
                             await reloadTempSessionStateFromDisk();
                             activeTempSlot = getTempSessionSlot(threadSessionKey);
                             const slots = getTempSessionHistory(threadSessionKey);
-                            console.log(`[QQ] /临时列表 thread=${threadSessionKey} slots=${slots.length}`);
+                            console.log(`[QQ] /会话列表 thread=${threadSessionKey} slots=${slots.length}`);
                             try {
                                 const rawState = await fs.readFile(TEMP_SESSION_STATE_FILE, "utf-8");
                                 const parsedState = JSON.parse(rawState) as TempSessionState;
                                 const diskSlots = Array.isArray(parsedState?.history?.[threadSessionKey])
                                     ? parsedState.history![threadSessionKey]!.length
                                     : 0;
-                                console.error(`[QQDBG] /临时列表 thread=${threadSessionKey} mem=${slots.length} disk=${diskSlots}`);
+                                console.error(`[QQDBG] /会话列表 thread=${threadSessionKey} mem=${slots.length} disk=${diskSlots}`);
                             } catch (err) {
-                                console.error(`[QQDBG] /临时列表 read-state-failed thread=${threadSessionKey} err=${String(err)}`);
+                                console.error(`[QQDBG] /会话列表 read-state-failed thread=${threadSessionKey} err=${String(err)}`);
                             }
-                            const rendered = slots.length > 0
-                                ? slots.map((slot, idx) => `${idx + 1}. ${slot}${slot === activeTempSlot ? ' (当前)' : ''}`).join("\n")
-                                : "（暂无）";
-                            const msg = `[OpenClawd QQ]\n临时会话列表：\n${rendered}\n使用 /临时 <名称> 进入会话`;
+                            const rendered = renderSessionCommandTargetList(threadSessionKey, activeTempSlot);
+                            const msg = `[OpenClawd QQ]\n会话列表：\n${rendered}\n使用 /会话 <名称> 新建或进入，/会话 <序号> 切换`;
                             if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                             return;
                         }
 
-                        if (cmd === '/临时结束' || cmd === '/tmpend') {
+                        if (cmd === '/会话结束' || cmd === '/临时结束' || cmd === '/tmpend') {
                             if (!activeTempSlot) {
                                 const msg = `[OpenClawd QQ]
-当前未在临时会话中。`;
+当前在默认会话中，默认会话无需结束。`;
                                 if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                                 return;
                             }
@@ -2680,7 +2736,7 @@ ${current}
                             await resetSessionByKey(storePathForEnd, routeForEnd.sessionKey);
                             await setTempSessionSlot(threadSessionKey, null);
                             const msg = `[OpenClawd QQ]
-✅ 临时会话 ${activeTempSlot} 已结束并清空，已回到主会话。`;
+✅ 会话 ${activeTempSlot} 已结束并清空，已回到默认会话。`;
                             activeTempSlot = null;
                             if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
                             return;
@@ -2779,12 +2835,13 @@ ${current}
                         if (cmd === '/help') {
                             const helpMsg = `[OpenClawd QQ]
 /status - 状态
-/临时 <名称> - 进入临时会话
-/临时重命名 <新名称> - 重命名当前临时会话
-/退出临时 - 回到主会话
-/临时状态 - 查看当前会话
-/临时列表 - 查看最近临时会话
-/临时结束 - 结束当前临时会话
+/会话 <名称> - 新建或进入会话
+/会话 <序号> - 切换到已有会话
+/会话重命名 <新名称> - 重命名当前会话
+/退出会话 - 回到默认会话
+/会话状态 - 查看当前会话
+/会话列表 - 查看已有会话
+/会话结束 - 结束当前会话
 /newsession - 重置当前会话
 /modelsync - 同步模型allowlist（按provider /models）
 /mute @用户 [分] - 禁言
