@@ -22,11 +22,19 @@
 
 ## 最近更新（2026-03）
 
+- 新增专题说明：[2026-03-20 默认行为调整](./docs/2026-03-20-default-behavior-update.md)。
+- 本轮以“QQ 插件默认值/默认输出策略调整”为主，不改 OpenClaw core 的既有设计；如果你更喜欢旧体验，仍可通过配置项手动恢复。
+- 默认关闭 `interruptOnNewMessage`，且仅在显式设为 `true` 时才会用“新消息打断旧回复”。
+- 默认启用 `blockStreaming=true` + `blockStreamingBreak=message_end`，让 commentary / final 按完整 assistant message 落地，减少 QQ 侧碎片化输出。
+- 默认 `forwardLongReplyThreshold=300`，长 `final_answer` 超过阈值时自动改用 QQ 合并转发；commentary 仍按普通消息发送。
+- 默认 `forwardNodeCharLimit=0`，转发时不按长度拆节点，尽量把同一轮长回复合并成一个转发。
+- reply / forward 上下文解析已补强，QQ 引用消息与合并转发中的文本线索可继续注入给模型。
 - 仓库文档现统一维护中文版本，仓库内英文 Markdown 已清理。
 - 新增 OneBot HTTP 模式文档，支持通过 HTTP API + webhook 接入，说明见 `docs/http-transport.md`。
 - QQ 私聊 session key 已回归官方命名风格：peer id 使用纯 QQ 号，不再写成 `qq:user:<id>`；旧本机会话会在启动时自动规范化。
 - 新增 `keywordOnlyTrigger`：群聊可切换为“仅关键词触发”，忽略 @ / 回复触发，适合与其他机器人共用同一 QQ 账号。
 - 新增 `showReplySessionSource`：回复前可标注来源会话，方便区分主会话与 `/临时` 会话。
+- 主 README 补充 `/临时` 会话槽说明，便于快速理解“同群分话题”的实际用法。
 - 自动重试 / Fast Fail / 并发合并 / 新消息打断 / 隐藏网关元数据等高级控制现已默认关闭，按需开启即可。
 - WebUI 参数说明已补强；复杂配置说明统一下沉到 `docs/advanced.md` 与 `docs/config-reference.md`。
 
@@ -70,6 +78,7 @@
 
 - [x] reply/forward 递归解析与分层上下文注入
 - [x] 隐藏 QQ 网关元数据注入（`injectGatewayMeta`）
+- [x] 同群临时会话槽（`/临时` / `/退出临时` / `/临时列表` 等）
 - [x] 可选回复来源会话标记（`showReplySessionSource`）
 - [x] 同会话并发防漏吞队列（`queueDebounceMs`）
 - [x] 新消息打断旧回复（`interruptOnNewMessage`）
@@ -91,8 +100,19 @@
 
 1. [3 分钟快速开始](./docs/quickstart.md)
 2. [配置参考（分组版）](./docs/config-reference.md)
-3. [高级能力与完整参数](./docs/advanced.md)
-4. [NapCat 部署说明（GitHub）](https://github.com/constansino/openclaw_qq/blob/main/deploy/napcat/README.md)
+3. [2026-03-20 默认行为调整](./docs/2026-03-20-default-behavior-update.md)
+4. [高级能力与完整参数](./docs/advanced.md)
+5. [NapCat 部署说明（GitHub）](https://github.com/constansino/openclaw_qq/blob/main/deploy/napcat/README.md)
+
+## `/临时` 会话槽是什么
+
+`/临时` 是 `openclaw_qq` 里已经落地的会话隔离工作流，主要解决“同一个 QQ 群里同时跑多个话题，但又不想把主会话上下文搅乱”这个问题。
+
+- 同一群内可维护一个主会话和多个命名临时会话槽，底层会写入独立 session key（形如 `::tmp:<名称>`）。
+- 群管理员可用 `/临时 <名称>` 进入或创建一个临时会话，把后续消息写进这个槽，不占用主会话上下文。
+- 临时会话支持 `/临时状态`、`/临时列表`、`/临时重命名`、`/退出临时`、`/临时结束`，适合把“查日志、修配置、写方案”这类任务拆开管理。
+- `showReplySessionSource=true` 时，回复前会自动加 `(from 会话xxx)` 或 `(from 主会话)`，这样即使群里同时有多个临时任务，也能快速看出当前回复属于哪个槽。
+- 当前实现重点是“上下文隔离 + 来源标记”。也就是说，完整结果仍然会发回原 QQ 群消息面；如果你想看更完整的命令列表和边界说明，见 [`docs/advanced.md`](./docs/advanced.md)。
 
 ## 3 分钟快速开始
 

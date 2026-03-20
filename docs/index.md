@@ -8,6 +8,7 @@
 
 - [3 分钟快速开始](./quickstart.md)
 - [配置参考（分组版）](./config-reference.md)
+- [2026-03-20 默认行为调整](./2026-03-20-default-behavior-update.md)
 - [部署指引（NapCat）](https://github.com/constansino/openclaw_qq/blob/main/deploy/napcat/README.md)
 - [高级能力与完整参数](./advanced.md)
 - [在线文档首页](https://constansino.github.io/openclaw_qq/)
@@ -24,7 +25,8 @@
 
 1. [快速开始](./quickstart.md)
 2. [配置参考](./config-reference.md)
-3. [部署指引（NapCat）](https://github.com/constansino/openclaw_qq/blob/main/deploy/napcat/README.md)
+3. [2026-03-20 默认行为调整](./2026-03-20-default-behavior-update.md)
+4. [部署指引（NapCat）](https://github.com/constansino/openclaw_qq/blob/main/deploy/napcat/README.md)
 
 ## 交流与支持
 

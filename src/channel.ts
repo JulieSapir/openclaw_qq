@@ -9,6 +9,7 @@ declare const process: any;
 import {
     type ChannelPlugin,
     type ChannelAccountSnapshot,
+    type OpenClawConfig,
     buildChannelConfigSchema,
     DEFAULT_ACCOUNT_ID,
     normalizeAccountId,
@@ -75,6 +76,7 @@ function resolveQQHttpWebhookPath(accountId: string, config: QQConfig): string {
 async function drainSessionQueue(sessionKey: string, config: QQConfig, sendMessageFn: (msg: string) => void) {
     const q = sessionQueues.get(sessionKey);
     if (!q || q.isProcessing || q.pendingPayloads.length === 0) return;
+    const interruptOnNewMessage = config.interruptOnNewMessage === true;
 
     q.isProcessing = true;
     const payloads = q.pendingPayloads;
@@ -113,7 +115,8 @@ async function drainSessionQueue(sessionKey: string, config: QQConfig, sendMessa
             isStale: () => {
                 const state = sessionQueues.get(sessionKey);
                 if (!state) return true;
-                return state.activeEpoch !== runEpoch || state.latestEpoch !== runEpoch;
+                if (state.activeEpoch !== runEpoch) return true;
+                return interruptOnNewMessage && state.latestEpoch !== runEpoch;
             },
         });
 
@@ -139,7 +142,7 @@ function enqueueQQMessageForDispatch(sessionKey: string, msg: PendingQQMsg, conf
     msg.runEpoch = q.latestEpoch;
     q.pendingPayloads.push(msg);
 
-    if (config.interruptOnNewMessage !== false && q.isProcessing && q.activeEpoch > 0) {
+    if (config.interruptOnNewMessage === true && q.isProcessing && q.activeEpoch > 0) {
         if (config.enableQueueNotify !== false) {
             sendMessageFn("[OpenClawQQ] 检测到新消息，正在中断上一轮回复并切换到新请求。");
         }
@@ -394,6 +397,30 @@ async function grokDrawDirect(prompt: string): Promise<{ ok: true; url: string }
     }
 }
 
+function buildQQReplyConfig(cfg: OpenClawConfig, config: QQConfig): OpenClawConfig {
+    const blockStreaming = config.blockStreaming ?? true;
+    const blockStreamingBreak = config.blockStreamingBreak ?? "message_end";
+
+    return {
+        ...cfg,
+        agents: {
+            ...cfg.agents,
+            defaults: {
+                ...cfg.agents?.defaults,
+                blockStreamingDefault: blockStreaming ? "on" : "off",
+                blockStreamingBreak,
+            },
+        },
+        channels: {
+            ...cfg.channels,
+            qq: {
+                ...((cfg.channels?.qq as Record<string, unknown> | undefined) ?? {}),
+                blockStreaming,
+            },
+        },
+    };
+}
+
 function buildModelProbeUrls(rawBaseUrl: string): string[] {
     const out: string[] = [];
     const baseUrl = (rawBaseUrl || "").trim().replace(/\/+$/, "");
@@ -421,10 +448,16 @@ async function fetchProviderModelIdsDynamic(baseUrl: string, apiKey?: string): P
             const text = await resp.text();
             const data = JSON.parse(text) as any;
             const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-            const ids = arr
+            const ids: string[] = arr
                 .map((item: any) => (typeof item?.id === "string" ? item.id.trim() : ""))
                 .filter((id: string) => Boolean(id));
-            if (ids.length > 0) return { ids: [...new Set(ids)], source: url };
+            if (ids.length > 0) {
+                const uniqueIds: string[] = [];
+                for (const id of ids) {
+                    if (!uniqueIds.includes(id)) uniqueIds.push(id);
+                }
+                return { ids: uniqueIds, source: url };
+            }
         } catch { }
     }
     return null;
@@ -572,6 +605,16 @@ function collectForwardIdsFromMessage(message: OneBotMessage | string | undefine
     return ids.filter(Boolean);
 }
 
+function collectForwardIdsFromCandidates(...messages: Array<OneBotMessage | string | undefined>): string[] {
+    const unique = new Set<string>();
+    for (const message of messages) {
+        for (const id of collectForwardIdsFromMessage(message)) {
+            unique.add(id);
+        }
+    }
+    return Array.from(unique);
+}
+
 function summarizeOneBotSegments(message: OneBotMessage | string | undefined, maxChars: number): LayerSegmentContext {
     const images = extractImageUrls(message, 5);
     const files: Array<{ name: string; url?: string; fileId?: string; busid?: string; size?: number }> = [];
@@ -648,8 +691,12 @@ async function buildReplyForwardContextBlock(opts: {
         forwardQueue.push({ id: fid, depth, layerTag });
     };
 
-    const collectAndEnqueueForwards = (message: OneBotMessage | string | undefined, depth: number, layerTag: string) => {
-        const fids = collectForwardIdsFromMessage(message);
+    const collectAndEnqueueForwards = (
+        depth: number,
+        layerTag: string,
+        ...messages: Array<OneBotMessage | string | undefined>
+    ) => {
+        const fids = collectForwardIdsFromCandidates(...messages);
         if (debugLayerTrace && fids.length > 0) {
             console.log(`[QQLayerTrace] enqueue forward ids depth=${depth} tag=${layerTag} ids=${fids.join(",")}`);
         }
@@ -662,7 +709,7 @@ async function buildReplyForwardContextBlock(opts: {
         const current = summarizeOneBotSegments(rootEvent.message, maxCharsPerLayer);
         for (const u of current.images) layeredImages.add(u);
         pushLine(`[Layer 0][current] ${current.text || "(空文本)"}`);
-        collectAndEnqueueForwards(rootEvent.message, 1, "forward");
+        collectAndEnqueueForwards(1, "forward", rootEvent.message, rootEvent.raw_message);
     }
 
     const seenReplyIds = new Set<string>();
@@ -680,7 +727,7 @@ async function buildReplyForwardContextBlock(opts: {
         const prefix = includeSenderInLayers ? `[Layer ${i}][reply][from:${senderName}]` : `[Layer ${i}][reply]`;
         pushLine(`${prefix} ${summarized.text || "(空文本)"}`);
 
-        collectAndEnqueueForwards(msgBody, 1, "forward-in-reply");
+        collectAndEnqueueForwards(1, "forward-in-reply", msgBody, cursor?.raw_message, oneBotPayloadData(cursor)?.raw_message);
 
         const nextReplyId = getReplyMessageId(extractMessageLikeFromPayload(cursor), cursor?.raw_message, oneBotPayloadData(cursor));
         if (debugLayerTrace) console.log(`[QQLayerTrace] reply layer=${i} nextReplyId=${nextReplyId || ""}`);
@@ -726,7 +773,7 @@ async function buildReplyForwardContextBlock(opts: {
 
                 // nested forward inside forward message
                 if (item.depth < maxForwardLayers) {
-                    collectAndEnqueueForwards(content as any, item.depth + 1, "forward-nested");
+                    collectAndEnqueueForwards(item.depth + 1, "forward-nested", content as any, typeof m?.raw_message === "string" ? m.raw_message : undefined);
                 }
 
                 // reply inside forward message
@@ -749,7 +796,7 @@ async function buildReplyForwardContextBlock(opts: {
                             ? `[Layer RF${item.depth}.${idx}][reply-in-forward][from:${rSender}]`
                             : `[Layer RF${item.depth}.${idx}][reply-in-forward]`;
                         pushLine(`${rPrefix} ${rSummarized.text || "(空文本)"}`);
-                        collectAndEnqueueForwards(rBody, item.depth + 1, "forward-in-reply-in-forward");
+                        collectAndEnqueueForwards(item.depth + 1, "forward-in-reply-in-forward", rBody, replied?.raw_message);
                     } catch { }
                 }
             }
@@ -1617,17 +1664,48 @@ function buildReplySessionSourcePrefix(activeTempSlot: string | null): string {
     return `(from ${resolveReplySessionSourceLabel(activeTempSlot)})`;
 }
 
+function normalizeAssistantTextPhase(value: unknown): "commentary" | "final_answer" | undefined {
+    return value === "commentary" || value === "final_answer" ? value : undefined;
+}
+
+function resolveReplyPayloadPhase(payload: any): "commentary" | "final_answer" | undefined {
+    const directPhase = normalizeAssistantTextPhase(payload?.phase);
+    if (directPhase) return directPhase;
+    const rawSignature = payload?.textSignature;
+    if (typeof rawSignature === "string") {
+        const trimmed = rawSignature.trim();
+        if (!trimmed.startsWith("{")) return undefined;
+        try {
+            const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+            return normalizeAssistantTextPhase(parsed.phase);
+        } catch {
+            return undefined;
+        }
+    }
+    if (rawSignature && typeof rawSignature === "object") {
+        return normalizeAssistantTextPhase((rawSignature as Record<string, unknown>).phase);
+    }
+    return undefined;
+}
+
 async function sendLongTextAsForwardMessage(params: {
     client: OneBotClient;
     groupId: number;
-    text: string;
+    text?: string;
+    texts?: string[];
     nodeName: string;
     nodeUin: string;
     nodeCharLimit: number;
 }): Promise<boolean> {
     const nodeLimitRaw = Number(params.nodeCharLimit);
-    const safeNodeLimit = Number.isFinite(nodeLimitRaw) ? Math.max(200, Math.floor(nodeLimitRaw)) : 1000;
-    const chunks = splitMessage(params.text, safeNodeLimit);
+    const shouldSplitNodes = Number.isFinite(nodeLimitRaw) && nodeLimitRaw > 0;
+    const safeNodeLimit = shouldSplitNodes ? Math.max(200, Math.floor(nodeLimitRaw)) : 0;
+    const rawTexts = (Array.isArray(params.texts) ? params.texts : [params.text ?? ""])
+        .filter((text): text is string => typeof text === "string" && text.trim().length > 0);
+    const chunks = shouldSplitNodes
+        ? rawTexts.flatMap((text) => splitMessage(text, safeNodeLimit))
+        : (rawTexts.length > 0 ? [rawTexts.join("")] : []);
+    if (chunks.length === 0) return false;
     const messages = chunks.map((chunk) => ({
         type: "node",
         data: {
@@ -1773,6 +1851,7 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
     capabilities: {
         chatTypes: ["direct", "group"],
         media: true,
+        blockStreaming: true,
         // @ts-ignore
         deleteMessage: true,
     },
@@ -1806,13 +1885,21 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                     label: "注入隐藏 QQ 网关上下文",
                     help: "默认关闭。开启后会给模型注入不可见的会话来源/触发方式等上下文。",
                 },
+                blockStreaming: {
+                    label: "按消息分块发送",
+                    help: "默认开启。推荐保留开启，让 commentary / final 按完整 assistant message 落地，不再只等最后一条最终回复。",
+                },
+                blockStreamingBreak: {
+                    label: "分块发送边界",
+                    help: "默认 message_end。每条 assistant message 完成后再发，更适合 QQ 群聊，也能减少工具调用前后的边界丢失。",
+                },
                 enrichReplyForwardContext: {
                     label: "解析 reply/forward 多层上下文",
                     help: "默认开启。会递归展开引用和合并转发内容，方便模型理解‘你在回谁、上下文是什么’。",
                 },
                 forwardLongReplyThreshold: {
                     label: "长回复转合并转发阈值",
-                    help: "大于这个字符数时，自动改用 QQ 合并转发发送。默认 0，表示关闭。",
+                    help: "final_answer 大于这个字符数时，自动改用 QQ 合并转发发送。默认 300；commentary 仍按普通消息发送。",
                 },
                 showReplySessionSource: {
                     label: "回复前标注来源会话",
@@ -1851,6 +1938,9 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
         describeAccount: (acc) => ({
             accountId: acc.accountId,
             configured: acc.configured,
+            blockStreaming: acc.config.blockStreaming ?? true,
+            blockStreamingBreak: acc.config.blockStreamingBreak ?? "message_end",
+            forwardLongReplyThreshold: acc.config.forwardLongReplyThreshold ?? 300,
         }),
     },
     directory: {
@@ -2216,7 +2306,8 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                     const guildId = event.guild_id;
                     const channelId = event.channel_id;
 
-                    let text = event.raw_message || "";
+                    const inboundRawMessage = typeof event.raw_message === "string" ? event.raw_message : "";
+                    let text = inboundRawMessage || "";
                     const fileHints: Array<{
                         name: string;
                         url?: string;
@@ -2340,9 +2431,8 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
                     // Some OneBot variants may not emit text segments for plain messages.
                     // Fall back to already-normalized text to avoid losing slash commands.
                     const commandTextCandidate = normalizeSlashVariants(extractedTextFromSegments || text.trim());
-                    const slashMatch = commandTextCandidate.match(/[\/]/);
-                    const slashIdx = slashMatch ? slashMatch.index ?? -1 : -1;
-                    const inlineCommand = slashIdx >= 0 ? commandTextCandidate.slice(slashIdx).trim() : "";
+                    const inlineCommandMatch = commandTextCandidate.match(/(?:^|\s)(\/[\s\S]*)$/);
+                    const inlineCommand = inlineCommandMatch ? inlineCommandMatch[1].trim() : "";
                     if (inlineCommand) {
                         const shortInline = inlineCommand.replace(/\s+/g, " ").slice(0, 160);
                         console.log(`[QQCMD] inbound user=${userId} group=${groupId ?? "-"} admin=${isAdmin} cmd="${shortInline}"`);
@@ -2640,7 +2730,16 @@ ${current}
                     }
 
                     let repliedMsg: any = null;
-                    const replyMsgId = getReplyMessageId(event.message, text);
+                    const replyMsgId = getReplyMessageId(event.message, inboundRawMessage, event);
+                    if (config.debugLayerTrace) {
+                        const segTypes = Array.isArray(event.message)
+                            ? event.message.map((seg) => String(seg?.type || "?")).join(",")
+                            : typeof event.message;
+                        const inboundForwardIds = collectForwardIdsFromCandidates(event.message, inboundRawMessage);
+                        console.log(
+                            `[QQLayerTrace] inbound segTypes=${segTypes} rawHasReply=${String(/\[CQ:reply[,]/.test(inboundRawMessage))} rawHasForward=${String(/\[CQ:(?:forward|forward_msg|nodes)[,\]]/.test(inboundRawMessage))} replyMsgId=${replyMsgId || ""} forwardIds=${inboundForwardIds.join(",")}`
+                        );
+                    }
                     if (replyMsgId) {
                         try { repliedMsg = await client.getMsg(replyMsgId); } catch (err) { }
                     }
@@ -2822,6 +2921,17 @@ ${current}
                     let deliveredAnything = false;
                     let dispatcherError: any = null;
                     let currentRunState: { isStale: () => boolean } | null = null;
+                    const forwardThreshold = Number(config.forwardLongReplyThreshold ?? 0);
+                    const canUseMergedForward = isGroup && Number.isFinite(forwardThreshold) && forwardThreshold > 0;
+                    const unknownBlockBoundaryThreshold = Number.isFinite(forwardThreshold) && forwardThreshold > 0 ? forwardThreshold : 300;
+                    const unknownBlockMergeWindowMs = 350;
+                    const bufferedFinalTexts: string[] = [];
+                    let bufferedFinalTotalChars = 0;
+                    const bufferedUnknownTexts: string[] = [];
+                    let bufferedUnknownTotalChars = 0;
+                    let bufferedUnknownLastAt = 0;
+                    let unknownFlushTimer: ReturnType<typeof setTimeout> | null = null;
+                    let unknownFlushVersion = 0;
                     let pendingReplySessionSourcePrefix = config.showReplySessionSource
                         ? buildReplySessionSourcePrefix(activeTempSlot)
                         : "";
@@ -2842,7 +2952,169 @@ ${current}
                         return true;
                     };
 
-                    const deliver = async (payload: any) => {
+                    const resetBufferedFinalTexts = () => {
+                        bufferedFinalTexts.length = 0;
+                        bufferedFinalTotalChars = 0;
+                    };
+
+                    const clearUnknownFlushTimer = () => {
+                        if (!unknownFlushTimer) return;
+                        clearTimeout(unknownFlushTimer);
+                        unknownFlushTimer = null;
+                    };
+
+                    const resetBufferedUnknownTexts = () => {
+                        clearUnknownFlushTimer();
+                        bufferedUnknownTexts.length = 0;
+                        bufferedUnknownTotalChars = 0;
+                        bufferedUnknownLastAt = 0;
+                        unknownFlushVersion += 1;
+                    };
+
+                    const prepareOutgoingText = async (msg: string): Promise<string> => {
+                        let processed = msg;
+                        const sessionPrefix = takeReplySessionSourcePrefix();
+                        if (sessionPrefix) {
+                            processed = processed.trim()
+                                ? `${sessionPrefix}\n${processed}`
+                                : sessionPrefix;
+                        }
+                        if (config.formatMarkdown) processed = stripMarkdown(processed);
+                        if (config.antiRiskMode) processed = processAntiRisk(processed);
+                        return await resolveInlineCqRecord(processed);
+                    };
+
+                    const sendProcessedText = async (processed: string): Promise<boolean> => {
+                        if (currentRunState?.isStale()) return false;
+                        const chunks = splitLongText(processed, config.maxMessageLength || 4000);
+                        const chunkTarget = buildAckTargetFromContext({
+                            isGroup,
+                            isGuild,
+                            groupId,
+                            guildId,
+                            channelId,
+                            userId,
+                        });
+                        for (let i = 0; i < chunks.length; i++) {
+                            if (currentRunState?.isStale()) return i > 0;
+                            let chunk = chunks[i];
+                            if (isGroup && i === 0) chunk = `[CQ:at,qq=${userId}] ${chunk}`;
+
+                            if (chunkTarget) {
+                                const sent = await sendChunkWithAckRetry(client, chunkTarget, chunk, 2);
+                                if (!sent) {
+                                    console.warn(`[QQ] Failed to send chunk with ACK after retries: target=${chunkTarget} index=${i + 1}/${chunks.length}`);
+                                    return i > 0;
+                                }
+                            } else {
+                                console.warn(`[QQ] Invalid chunk target context, abort chunk send: isGroup=${String(isGroup)} isGuild=${String(isGuild)} groupId=${String(groupId)} guildId=${String(guildId)} channelId=${String(channelId)} userId=${String(userId)}`);
+                                return i > 0;
+                            }
+
+                            if (!isGuild && config.enableTTS && i === 0 && chunk.length < 100) {
+                                const tts = chunk.replace(/\[CQ:.*?\]/g, "").trim();
+                                if (tts) {
+                                    if (isGroup) client.sendGroupMsg(groupId, `[CQ:tts,text=${tts}]`);
+                                    else client.sendPrivateMsg(userId, `[CQ:tts,text=${tts}]`);
+                                }
+                            }
+
+                            if (chunks.length > 1 && i < chunks.length - 1) {
+                                const configuredGap = Number(config.rateLimitMs ?? 0);
+                                const interChunkGapMs = Number.isFinite(configuredGap)
+                                    ? Math.max(50, configuredGap)
+                                    : 50;
+                                await sleep(interChunkGapMs);
+                            }
+                        }
+                        return chunks.length > 0;
+                    };
+
+                    const flushTextBatch = async (
+                        texts: string[],
+                        totalLen: number,
+                        meta: { phaseLabel: string; reason?: string },
+                    ): Promise<boolean> => {
+                        if (currentRunState?.isStale() || texts.length === 0) return false;
+                        if (canUseMergedForward && totalLen >= forwardThreshold) {
+                            const sentAsForward = await sendLongTextAsForwardMessage({
+                                client,
+                                groupId,
+                                texts,
+                                nodeName: (config.forwardNodeName || "OpenClaw").trim() || "OpenClaw",
+                                nodeUin: String(client.getSelfId() || userId),
+                                nodeCharLimit: Number(config.forwardNodeCharLimit ?? 0),
+                            });
+                            if (currentRunState?.isStale()) return false;
+                            if (sentAsForward) {
+                                console.log(`[QQ] merged-forward delivered phase=${meta.phaseLabel} blocks=${texts.length} len=${totalLen} threshold=${forwardThreshold} group=${groupId}${meta.reason ? ` reason=${meta.reason}` : ""}`);
+                                return true;
+                            }
+                            console.warn(`[QQ] merged-forward failed, fallback to plain chunks phase=${meta.phaseLabel} blocks=${texts.length} len=${totalLen} threshold=${forwardThreshold} group=${groupId}${meta.reason ? ` reason=${meta.reason}` : ""}`);
+                        }
+
+                        let sentAnything = false;
+                        for (const textItem of texts) {
+                            const sent = await sendProcessedText(textItem);
+                            if (sent) sentAnything = true;
+                        }
+                        if (sentAnything && meta.phaseLabel === "unknown") {
+                            console.log(`[QQ] plain-text delivered phase=unknown blocks=${texts.length} len=${totalLen} group=${groupId}${meta.reason ? ` reason=${meta.reason}` : ""}`);
+                        }
+                        return sentAnything;
+                    };
+
+                    const flushBufferedFinalTexts = async (): Promise<boolean> => {
+                        if (currentRunState?.isStale() || bufferedFinalTexts.length === 0) return false;
+                        const texts = [...bufferedFinalTexts];
+                        const totalLen = bufferedFinalTotalChars;
+                        resetBufferedFinalTexts();
+                        return await flushTextBatch(texts, totalLen, { phaseLabel: "final_answer" });
+                    };
+
+                    const flushBufferedUnknownTexts = async (reason: string): Promise<boolean> => {
+                        if (currentRunState?.isStale() || bufferedUnknownTexts.length === 0) return false;
+                        const texts = [...bufferedUnknownTexts];
+                        const totalLen = bufferedUnknownTotalChars;
+                        resetBufferedUnknownTexts();
+                        return await flushTextBatch(texts, totalLen, { phaseLabel: "unknown", reason });
+                    };
+
+                    const scheduleUnknownFlush = () => {
+                        if (bufferedUnknownTexts.length === 0) return;
+                        clearUnknownFlushTimer();
+                        const version = ++unknownFlushVersion;
+                        unknownFlushTimer = setTimeout(() => {
+                            if (version !== unknownFlushVersion) return;
+                            void (async () => {
+                                const flushed = await flushBufferedUnknownTexts("debounce");
+                                if (flushed) deliveredAnything = true;
+                            })();
+                        }, unknownBlockMergeWindowMs);
+                    };
+
+                    const bufferUnknownBlockText = async (processed: string): Promise<void> => {
+                        const now = Date.now();
+                        const gapMs = bufferedUnknownLastAt > 0 ? now - bufferedUnknownLastAt : 0;
+                        const shouldSplitShortThenLong = bufferedUnknownTexts.length > 0 &&
+                            bufferedUnknownTotalChars > 0 &&
+                            bufferedUnknownTotalChars < unknownBlockBoundaryThreshold &&
+                            processed.length >= unknownBlockBoundaryThreshold;
+                        if (bufferedUnknownTexts.length > 0 && (gapMs > unknownBlockMergeWindowMs || shouldSplitShortThenLong)) {
+                            const flushed = await flushBufferedUnknownTexts(gapMs > unknownBlockMergeWindowMs ? `gap_${gapMs}` : "short_then_long");
+                            if (flushed) deliveredAnything = true;
+                        }
+
+                        bufferedUnknownTexts.push(processed);
+                        bufferedUnknownTotalChars += processed.length;
+                        bufferedUnknownLastAt = now;
+                        if (config.debugLayerTrace) {
+                            console.log(`[QQLayerTrace] unknown block buffered blocks=${bufferedUnknownTexts.length} total=${bufferedUnknownTotalChars} last=${processed.length}`);
+                        }
+                        scheduleUnknownFlush();
+                    };
+
+                    const deliver = async (payload: any, info?: { kind?: string }) => {
                         if (currentRunState?.isStale()) return;
                         const isTextFailure = payload.text && (
                             payload.text.includes("Agent failed before reply:") ||
@@ -2854,83 +3126,43 @@ ${current}
                             dispatcherError = new Error(payload.text || "API Error");
                             return;
                         }
-                        const send = async (msg: string): Promise<boolean> => {
-                            if (currentRunState?.isStale()) return false;
-                            let processed = msg;
-                            const sessionPrefix = takeReplySessionSourcePrefix();
-                            if (sessionPrefix) {
-                                processed = processed.trim()
-                                    ? `${sessionPrefix}\n${processed}`
-                                    : sessionPrefix;
-                            }
-                            if (config.formatMarkdown) processed = stripMarkdown(processed);
-                            if (config.antiRiskMode) processed = processAntiRisk(processed);
-                            processed = await resolveInlineCqRecord(processed);
-                            if (currentRunState?.isStale()) return false;
-
-                            const forwardThreshold = Number(config.forwardLongReplyThreshold ?? 0);
-                            if (isGroup && Number.isFinite(forwardThreshold) && forwardThreshold > 0 && processed.length >= forwardThreshold) {
-                                const sentAsForward = await sendLongTextAsForwardMessage({
-                                    client,
-                                    groupId,
-                                    text: processed,
-                                    nodeName: (config.forwardNodeName || "OpenClaw").trim() || "OpenClaw",
-                                    nodeUin: String(client.getSelfId() || userId),
-                                    nodeCharLimit: Number(config.forwardNodeCharLimit ?? 1000),
-                                });
-                                if (currentRunState?.isStale()) return false;
-                                if (sentAsForward) return true;
-                            }
-
-                            const chunks = splitLongText(processed, config.maxMessageLength || 4000);
-                            const chunkTarget = buildAckTargetFromContext({
-                                isGroup,
-                                isGuild,
-                                groupId,
-                                guildId,
-                                channelId,
-                                userId,
-                            });
-                            for (let i = 0; i < chunks.length; i++) {
-                                if (currentRunState?.isStale()) return i > 0;
-                                let chunk = chunks[i];
-                                if (isGroup && i === 0) chunk = `[CQ:at,qq=${userId}] ${chunk}`;
-
-                                if (chunkTarget) {
-                                    const sent = await sendChunkWithAckRetry(client, chunkTarget, chunk, 2);
-                                    if (!sent) {
-                                        console.warn(`[QQ] Failed to send chunk with ACK after retries: target=${chunkTarget} index=${i + 1}/${chunks.length}`);
-                                        return i > 0;
-                                    }
-                                } else {
-                                    // 目标字段异常时中止
-                                    console.warn(`[QQ] Invalid chunk target context, abort chunk send: isGroup=${String(isGroup)} isGuild=${String(isGuild)} groupId=${String(groupId)} guildId=${String(guildId)} channelId=${String(channelId)} userId=${String(userId)}`);
-                                    return i > 0;
-                                }
-
-                                if (!isGuild && config.enableTTS && i === 0 && chunk.length < 100) {
-                                    const tts = chunk.replace(/\[CQ:.*?\]/g, "").trim();
-                                    if (tts) {
-                                        if (isGroup) client.sendGroupMsg(groupId, `[CQ:tts,text=${tts}]`);
-                                        else client.sendPrivateMsg(userId, `[CQ:tts,text=${tts}]`);
-                                    }
-                                }
-
-                                if (chunks.length > 1 && i < chunks.length - 1) {
-                                    const configuredGap = Number(config.rateLimitMs ?? 0);
-                                    const interChunkGapMs = Number.isFinite(configuredGap)
-                                        ? Math.max(50, configuredGap)
-                                        : 50;
-                                    await sleep(interChunkGapMs);
-                                }
-                            }
-                            return chunks.length > 0;
-                        };
+                        const phase = resolveReplyPayloadPhase(payload);
+                        if (config.debugLayerTrace && payload.text && payload.text.trim()) {
+                            console.log(`[QQLayerTrace] outbound text kind=${info?.kind || "unknown"} phase=${phase || "unknown"} len=${payload.text.length}`);
+                        }
                         if (payload.text && payload.text.trim()) {
-                            const sentText = await send(payload.text);
-                            if (sentText) deliveredAnything = true;
+                            const processed = await prepareOutgoingText(payload.text);
+                            if (currentRunState?.isStale()) return;
+                            if (processed.trim()) {
+                                const isUnknownBlockText = !phase && info?.kind === "block";
+                                if (isUnknownBlockText) {
+                                    const flushedBufferedFinal = await flushBufferedFinalTexts();
+                                    if (flushedBufferedFinal) deliveredAnything = true;
+                                    await bufferUnknownBlockText(processed);
+                                } else {
+                                    const flushedBufferedUnknown = await flushBufferedUnknownTexts(`before_${phase || info?.kind || "text"}`);
+                                    if (flushedBufferedUnknown) deliveredAnything = true;
+                                    const shouldBufferKnownFinal = canUseMergedForward && (
+                                        phase === "final_answer" ||
+                                        (!phase && info?.kind === "final")
+                                    );
+                                    if (shouldBufferKnownFinal) {
+                                        bufferedFinalTexts.push(processed);
+                                        bufferedFinalTotalChars += processed.length;
+                                    } else {
+                                        const flushedBufferedText = await flushBufferedFinalTexts();
+                                        if (flushedBufferedText) deliveredAnything = true;
+                                        const sentText = await sendProcessedText(processed);
+                                        if (sentText) deliveredAnything = true;
+                                    }
+                                }
+                            }
                         }
                         if (payload.files) {
+                            const flushedUnknownText = await flushBufferedUnknownTexts("before_files");
+                            if (flushedUnknownText) deliveredAnything = true;
+                            const flushedBufferedText = await flushBufferedFinalTexts();
+                            if (flushedBufferedText) deliveredAnything = true;
                             if (!payload.text && pendingReplySessionSourcePrefix) {
                                 const sentPrefix = await sendSessionSourcePrefixOnly();
                                 if (sentPrefix) deliveredAnything = true;
@@ -2962,8 +3194,6 @@ ${current}
                             }
                         }
                     };
-
-                    const { dispatcher, replyOptions } = runtime.channel.reply.createReplyDispatcherWithTyping({ deliver });
 
                     let replyToBody = "";
                     let replyToSender = "";
@@ -3145,17 +3375,29 @@ ${current}
 
                                         const dispatchStartTime = Date.now();
                                         try {
-                                            await runtime.channel.reply.dispatchReplyFromConfig({ ctx: mergedCtx, cfg: currentCfg, dispatcher, replyOptions });
+                                            resetBufferedFinalTexts();
+                                            resetBufferedUnknownTexts();
+                                            const replyCfg = buildQQReplyConfig(currentCfg as OpenClawConfig, config);
+                                            const dispatchResult = await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+                                                ctx: mergedCtx,
+                                                cfg: replyCfg,
+                                                dispatcherOptions: {
+                                                    deliver,
+                                                    onError: (err, deliveryInfo) => {
+                                                        if (deliveryInfo.kind === "final") {
+                                                            dispatcherError = err;
+                                                        }
+                                                        console.error(`[QQ] buffered dispatch ${deliveryInfo.kind} failed: ${String(err)}`);
+                                                    },
+                                                },
+                                                replyOptions: {},
+                                            });
+                                            if (!runState.isStale()) {
+                                                console.log(`[QQ] dispatch result queuedFinal=${String(Boolean(dispatchResult?.queuedFinal))} counts=${JSON.stringify(dispatchResult?.counts || {})} session=${route.sessionKey}`);
+                                            }
                                         } catch (err) {
                                             globalDispatchError = err;
-                                            console.error(`[QQ] Error during dispatchReplyFromConfig (attempt ${tryCount + 1}/${maxRetries + 1}):`, err);
-                                        }
-                                        try {
-                                            // Reply dispatch is buffered; wait until queued deliveries settle
-                                            // before checking deliveredAnything/globalDispatchError for retry logic.
-                                            await dispatcher.waitForIdle();
-                                        } catch (idleErr) {
-                                            console.warn(`[QQ] Failed while waiting dispatcher idle: ${String(idleErr)}`);
+                                            console.error(`[QQ] Error during buffered reply dispatch (attempt ${tryCount + 1}/${maxRetries + 1}):`, err);
                                         }
                                         const dispatchDurationMs = Date.now() - dispatchStartTime;
                                         if (runState.isStale()) {
@@ -3164,6 +3406,10 @@ ${current}
 
                                         globalDispatchError = globalDispatchError || dispatcherError;
                                         const errMessage = globalDispatchError ? ((globalDispatchError instanceof Error) ? globalDispatchError.message : String(globalDispatchError)) : "";
+                                        if (globalDispatchError) {
+                                            resetBufferedUnknownTexts();
+                                            resetBufferedFinalTexts();
+                                        }
 
                                         if (globalDispatchError) {
                                             const fastFailWords = config.fastFailErrors || ["api key", "no api key found", "not found", "401", "unauthorized", "billing", "余额不足", "已欠费"];
@@ -3178,6 +3424,10 @@ ${current}
                                         }
 
                                         if (!globalDispatchError) {
+                                            const flushedUnknownText = await flushBufferedUnknownTexts("dispatch_end");
+                                            if (flushedUnknownText) deliveredAnything = true;
+                                            const flushedBufferedText = await flushBufferedFinalTexts();
+                                            if (flushedBufferedText) deliveredAnything = true;
                                             const shouldFallback = config.enableEmptyReplyFallback !== false && !text.trim().startsWith('/');
                                             if (deliveredAnything || !shouldFallback) {
                                                 break out_loop;
@@ -3215,12 +3465,8 @@ ${current}
                             console.error(`[QQ] Outer error:`, error);
                         }
                         finally {
-                            try {
-                                dispatcher.markComplete();
-                                await dispatcher.waitForIdle();
-                            } catch (idleErr) {
-                                console.warn(`[QQ] Failed during dispatcher completion: ${String(idleErr)}`);
-                            }
+                            resetBufferedUnknownTexts();
+                            resetBufferedFinalTexts();
                             currentRunState = null;
                             clearProcessingTimers();
                             activeTaskIds.delete(taskKey);

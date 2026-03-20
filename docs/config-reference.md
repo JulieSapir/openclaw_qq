@@ -40,10 +40,13 @@
 
 - `maxMessageLength`：单条消息最大长度。
 - `rateLimitMs`：多段发送间隔。
+- `blockStreaming`：是否按 assistant message 分块发送回复。
+- `blockStreamingBreak`：分块发送边界（推荐 `message_end`）。
 - `formatMarkdown`：Markdown 转纯文本。
 - `antiRiskMode`：风控规避模式。
 - `showReplySessionSource`：给回复附加来源会话标记（临时会话场景很有用）。
-- `forwardLongReplyThreshold`：长回复自动合并转发阈值。
+- `forwardLongReplyThreshold`：最终长回复自动合并转发阈值（默认 `300`，仅对 `final_answer` 生效）。
+- `forwardNodeCharLimit`：合并转发时单节点字符上限（默认 `0`，表示不按长度拆节点）。
 
 ## G. 多媒体与频道
 
@@ -69,7 +72,35 @@
       "fastFailErrors": [],
       "queueDebounceMs": 0,
       "injectGatewayMeta": false,
-      "interruptOnNewMessage": false
+      "interruptOnNewMessage": false,
+      "blockStreaming": true,
+      "blockStreamingBreak": "message_end",
+      "forwardLongReplyThreshold": 300,
+      "forwardNodeCharLimit": 0
+    }
+  }
+}
+```
+
+## 当前默认输出策略
+
+- 过程句会按普通消息发送，不需要为了短 commentary 额外走转发。
+- `final_answer` 超过 `300` 字时，默认自动改用 QQ 合并转发。
+- 默认不会把同一轮长回复继续按节点长度拆开；`forwardNodeCharLimit=0` 就是“不拆节点”。
+- 默认不因同会话新消息而打断当前任务；只有把 `interruptOnNewMessage` 显式设为 `true` 才会启用。
+
+## 恢复旧体验示例
+
+如果你更喜欢之前更激进的打断/拆分方式，可以手动配置：
+
+```json
+{
+  "channels": {
+    "qq": {
+      "interruptOnNewMessage": true,
+      "blockStreamingBreak": "text_end",
+      "forwardLongReplyThreshold": 800,
+      "forwardNodeCharLimit": 1000
     }
   }
 }
@@ -77,5 +108,6 @@
 
 ## 进一步阅读
 
+- 默认行为调整说明：查看 [2026-03-20 默认行为调整](./2026-03-20-default-behavior-update.md)。
 - 完整参数与示例：查看仓库根目录 `README.md` 的配置章节。
 - 部署细节：查看 [NapCat 部署说明](https://github.com/constansino/openclaw_qq/blob/main/deploy/napcat/README.md)。

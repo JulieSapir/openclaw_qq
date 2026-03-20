@@ -104,6 +104,8 @@ export const QQConfigSchema = z.object({
   sharedMediaContainerDir: z.preprocess((value) => normalizeLooseString(value), z.string().optional().default("/openclaw_media")).describe("可选：共享目录在 NapCat 容器内的挂载路径。默认 /openclaw_media。"),
   enableGuilds: BooleanInputSchema(true).describe("是否启用 QQ 频道（Guild）支持。"),
   enrichReplyForwardContext: BooleanInputSchema(true).describe("是否递归解析 reply/forward 并注入多层上下文。默认开启。"),
+  blockStreaming: BooleanInputSchema(true).describe("是否按 assistant message 分块发送回复。默认开启，推荐配合 message_end，让 commentary/final 按完整消息落地。"),
+  blockStreamingBreak: z.preprocess((value) => normalizeLooseString(value)?.toLowerCase(), z.enum(["text_end", "message_end"]).optional().default("message_end")).describe("分块发送的边界。默认 message_end：等单条 assistant message 完整生成后再发，更适合 QQ 群聊。"),
   maxReplyLayers: NumberInputSchema(5).describe("reply 最大递归层数。默认 5。"),
   maxForwardLayers: NumberInputSchema(5).describe("forward 最大递归层数。默认 5。"),
   maxForwardMessagesPerLayer: NumberInputSchema(8).describe("每层 forward 最多展开多少条子消息。默认 8。"),
@@ -116,8 +118,8 @@ export const QQConfigSchema = z.object({
   queueDebounceMs: NumberInputSchema(0).describe("连续消息合并防抖等待时间（毫秒，默认 0=关闭；大于 0 时才会开启明显的消息合并窗口）。"),
   injectGatewayMeta: BooleanInputSchema(false).describe("是否在系统提示前注入隐藏 QQ 网关元数据（会话来源、触发方式、会话标签等）。默认关闭。"),
   interruptOnNewMessage: BooleanInputSchema(false).describe("同会话新消息到达时，是否中断上一轮回复并优先处理最新请求。默认关闭。"),
-  forwardLongReplyThreshold: NumberInputSchema(0).describe("长回复自动转为 QQ 合并转发的阈值（字符数）。0=关闭该功能。"),
-  forwardNodeCharLimit: NumberInputSchema(1000).describe("启用长回复合并转发时，每个转发节点的最大字符数。默认 1000。"),
+  forwardLongReplyThreshold: NumberInputSchema(300).describe("final_answer 长回复自动转为 QQ 合并转发的阈值（字符数）。默认 300；commentary 仍按普通消息发送。"),
+  forwardNodeCharLimit: NumberInputSchema(0).describe("启用长回复合并转发时，每个转发节点的最大字符数。默认 0，表示不按长度拆节点；同一轮回复的多条 assistant message 会尽量合并进一个转发。"),
   forwardNodeName: z.preprocess((value) => normalizeLooseString(value), z.string().optional().default("OpenClaw")).describe("启用长回复合并转发时，节点显示昵称。默认 OpenClaw。"),
 }).passthrough();
 
