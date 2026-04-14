@@ -12,11 +12,15 @@ import {
   type ChannelAccountSnapshot,
   type ChannelSetupInput,
   type OpenClawConfig,
-  buildChannelConfigSchema,
   type ReplyPayload,
-  applyAccountNameToChannelSection,
-  migrateBaseNameToDefaultAccount,
 } from "openclaw/plugin-sdk";
+// 以下三个函数在运行时由 SDK 导出，但本地类型声明不完整
+// @ts-expect-error SDK 类型声明未包含 buildChannelConfigSchema
+import { buildChannelConfigSchema } from "openclaw/plugin-sdk";
+// @ts-expect-error SDK 类型声明未包含 applyAccountNameToChannelSection
+import { applyAccountNameToChannelSection } from "openclaw/plugin-sdk";
+// @ts-expect-error SDK 类型声明未包含 migrateBaseNameToDefaultAccount
+import { migrateBaseNameToDefaultAccount } from "openclaw/plugin-sdk";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import { OneBotClient } from "./client.js";
 import { QQConfigSchema, type QQConfig } from "./config.js";
@@ -2848,8 +2852,8 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
           let activeTempSlot = getTempSessionSlot(threadSessionKey);
           const extractedTextFromSegments = Array.isArray(event.message)
             ? event.message
-                .filter((seg) => seg?.type === "text")
-                .map((seg) => String(seg.data?.text || ""))
+                .filter((seg: { type: string }) => seg?.type === "text")
+                .map((seg: { data: { text: any } }) => String(seg.data?.text || ""))
                 .join(" ")
                 .trim()
             : "";
@@ -3206,7 +3210,7 @@ ${current}
           let repliedMsg: any = null;
           const replyMsgId = getReplyMessageId(event.message, inboundRawMessage, event);
           if (config.debugLayerTrace) {
-            const segTypes = Array.isArray(event.message) ? event.message.map((seg) => String(seg?.type || "?")).join(",") : typeof event.message;
+            const segTypes = Array.isArray(event.message) ? event.message.map((seg: { type: any }) => String(seg?.type || "?")).join(",") : typeof event.message;
             const inboundForwardIds = collectForwardIdsFromCandidates(event.message, inboundRawMessage);
             console.log(
               `[QQLayerTrace] inbound segTypes=${segTypes} rawHasReply=${String(/\[CQ:reply[,]/.test(inboundRawMessage))} rawHasForward=${String(/\[CQ:(?:forward|forward_msg|nodes)[,\]]/.test(inboundRawMessage))} replyMsgId=${replyMsgId || ""} forwardIds=${inboundForwardIds.join(",")}`,
@@ -4040,7 +4044,8 @@ ${current}
         timestamp: Date.now(),
       };
     },
-    sendMedia: async ({ to, text, mediaUrl, accountId, replyToId }) => {
+    sendMedia: async ({ to, text, mediaUrl: _mediaUrl, accountId, replyToId }) => {
+      const mediaUrl = _mediaUrl ?? "";
       const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
       if (!client) throw new Error("QQ client not connected");
 
