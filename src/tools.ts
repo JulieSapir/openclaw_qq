@@ -28,8 +28,12 @@ const QQSendMessageSchema = {
     },
     message: {
       type: "string" as const,
-      description: "要发送的消息文本内容。发送图片时使用 MEDIA: 前缀加文件路径，例如 'MEDIA:/home/node/.openclaw/media/browser/xxx.png'。如果是 browser 截图，直接使用 browser 返回的原始文件路径，不要用 write 工具重新写入文件（会导致截断）。相对路径会基于 workspace 目录解析。",
+      description: "要发送的消息文本内容。也可以使用 MEDIA:/path 前缀嵌入图片文件。纯发图片时可留空，改用 image_base64 参数。",
       maxLength: 4500,
+    },
+    image_base64: {
+      type: "string" as const,
+      description: "图片的 base64 编码数据（不含 data: 前缀）。发送 browser 截图时优先使用此参数——browser 截图工具返回的是内联图片，将其 base64 数据直接填入此参数即可，不需要先用 write 写文件。",
     },
     forward: {
       type: "boolean" as const,
@@ -41,7 +45,7 @@ const QQSendMessageSchema = {
       maxLength: 20,
     },
   },
-  required: ["target_type", "target_id", "message"],
+  required: ["target_type", "target_id"],
   additionalProperties: false,
 };
 
@@ -142,6 +146,7 @@ interface QQSendMessageParams {
   target_type: "group" | "private";
   target_id: number;
   message: string;
+  image_base64?: string;
   forward?: boolean;
   forward_node_name?: string;
 }
@@ -331,15 +336,30 @@ export function createQQSendMessageTool(_ctx?: any) {
   return {
     name: "qq_send_message",
     label: "QQ 发送消息",
-    description: "向 QQ 群或私聊主动发送消息。支持普通文本和图片（使用 MEDIA:/path 前缀发送图片）。当需要向 QQ 发送截图或文件中的图片时，必须使用此工具，不要直接输出 MEDIA: 文本或用 exec 执行命令。仅管理员可触发。",
+    description: "向 QQ 群或私聊主动发送消息。支持文本、图片和混合消息。发送 browser 截图时优先使用 image_base64 参数（直接传 base64 数据）。仅管理员可触发。",
     parameters: QQSendMessageSchema,
     execute: async (_toolCallId: string, rawParams: unknown) => {
       const params = rawParams as QQSendMessageParams;
       const { client, error } = resolveClient();
       if (!client) return toolResult(error!);
 
-      // 统一处理 MEDIA: 前缀（异步转 base64）
-      const resolvedMessage = await resolveMediaContent(params.message);
+      if (!params.message && !params.image_base64) {
+        return toolResult("message 和 image_base64 至少需要提供一个");
+      }
+
+      // 构建最终消息：优先 image_base64，其次 MEDIA: 前缀处理
+      let resolvedMessage: string;
+      if (params.image_base64) {
+        // 验证 base64 内容是有效图片
+        const decoded = Buffer.from(params.image_base64, "base64");
+        if (!isValidImageBuffer(decoded)) {
+          return toolResult(`图片无效：base64 数据不是有效的图片格式（解码后 ${decoded.length} 字节）`);
+        }
+        const imageCQ = `[CQ:image,file=base64://${params.image_base64}]`;
+        resolvedMessage = params.message ? `${await resolveMediaContent(params.message)}${imageCQ}` : imageCQ;
+      } else {
+        resolvedMessage = await resolveMediaContent(params.message || "");
+      }
 
       try {
         if (params.target_type === "group") {
