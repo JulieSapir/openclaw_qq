@@ -120,6 +120,22 @@ interface QQForwardMessageParams {
 
 // ─── 辅助函数 ──────────────────────────────────────────────
 
+/**
+ * 将 MEDIA: 前缀的文件路径转换为 CQ 码图片消息。
+ * 如果内容不含 MEDIA: 前缀，原样返回文本。
+ */
+function resolveMediaContent(content: string): string {
+  // 匹配 MEDIA:/path/to/file 格式
+  const mediaPrefix = "MEDIA:";
+  if (!content.startsWith(mediaPrefix)) return content;
+
+  const filePath = content.slice(mediaPrefix.length).trim();
+  if (!filePath) return content;
+
+  // 转换为 CQ 码图片格式，OneBot 通过 file:// 协议读取本地文件
+  return `[CQ:image,file=file://${filePath}]`;
+}
+
 function resolveClient(accountId?: string) {
   const client = getRegisteredClient(accountId);
   if (!client || !client.isConnected()) {
@@ -151,6 +167,9 @@ export function createQQSendMessageTool(_ctx?: any) {
       const { client, error } = resolveClient();
       if (!client) return { output: error };
 
+      // 统一处理 MEDIA: 前缀
+      const resolvedMessage = resolveMediaContent(params.message);
+
       try {
         if (params.target_type === "group") {
           if (params.forward) {
@@ -164,7 +183,7 @@ export function createQQSendMessageTool(_ctx?: any) {
                 data: {
                   name: nodeName,
                   uin: nodeUin,
-                  content: params.message,
+                  content: resolvedMessage,
                 },
               },
             ];
@@ -184,13 +203,13 @@ export function createQQSendMessageTool(_ctx?: any) {
             }
             return { output: `已向群 ${params.target_id} 发送合并转发消息` };
           }
-          const ack = await client.sendGroupMsgAck(params.target_id, params.message);
+          const ack = await client.sendGroupMsgAck(params.target_id, resolvedMessage);
           const msgId = ack?.message_id ?? "unknown";
           return { output: `已向群 ${params.target_id} 发送消息（message_id: ${msgId}）` };
         }
 
         // 私聊
-        const ack = await client.sendPrivateMsgAck(params.target_id, params.message);
+        const ack = await client.sendPrivateMsgAck(params.target_id, resolvedMessage);
         const msgId = ack?.message_id ?? "unknown";
         return { output: `已向用户 ${params.target_id} 发送私聊消息（message_id: ${msgId}）` };
       } catch (err) {
@@ -283,7 +302,7 @@ export function createQQForwardMessageTool(_ctx?: any) {
         data: {
           name: msg.name,
           uin: defaultUin,
-          content: msg.content,
+          content: resolveMediaContent(msg.content),
         },
       }));
 
