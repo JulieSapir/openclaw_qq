@@ -95,7 +95,32 @@ const QQForwardMessageSchema = {
   additionalProperties: false,
 };
 
-// ─── 类型定义 ──────────────────────────────────────────────
+const QQRecallMessageSchema = {
+  type: "object" as const,
+  properties: {
+    message_id: {
+      type: "string" as const,
+      description: "要撤回的消息 ID",
+    },
+  },
+  required: ["message_id"],
+  additionalProperties: false,
+};
+
+const QQBatchRecallMessagesSchema = {
+  type: "object" as const,
+  properties: {
+    message_ids: {
+      type: "array" as const,
+      description: "要撤回的消息 ID 列表",
+      items: { type: "string" as const },
+      minItems: 1,
+      maxItems: 50,
+    },
+  },
+  required: ["message_ids"],
+  additionalProperties: false,
+};
 
 interface QQSendMessageParams {
   target_type: "group" | "private";
@@ -115,6 +140,14 @@ interface QQForwardMessageParams {
   target_type: "group" | "private";
   target_id: number;
   messages: Array<{ name: string; content: string }>;
+}
+
+interface QQRecallMessageParams {
+  message_id: string;
+}
+
+interface QQBatchRecallMessagesParams {
+  message_ids: string[];
 }
 
 // ─── 辅助函数 ──────────────────────────────────────────────
@@ -343,6 +376,59 @@ export function createQQForwardMessageTool(_ctx?: any) {
           return toolResult(`合并转发失败（两种 API 均失败）：\n- send_private_forward_msg: ${String(lastErr)}\n- send_forward_msg: ${String(e)}`);
         }
       }
+    },
+  };
+}
+
+export function createQQRecallMessageTool(_ctx?: any) {
+  return {
+    name: "qq_recall_message",
+    label: "QQ 撤回消息",
+    description: "撤回一条 QQ 消息。需要提供消息 ID。仅管理员可触发。Bot 只能撤回自己发送的消息或群管理员可撤回群成员消息（2 分钟内）。",
+    parameters: QQRecallMessageSchema,
+    execute: async (_toolCallId: string, rawParams: unknown) => {
+      const params = rawParams as QQRecallMessageParams;
+      const { client, error } = resolveClient();
+      if (!client) return toolResult(error!);
+
+      try {
+        await (client as any).sendWithResponse("delete_msg", { message_id: params.message_id }, 10000);
+        return toolResult(`已撤回消息 ${params.message_id}`);
+      } catch (err) {
+        return toolResult(`撤回失败：${String(err)}`);
+      }
+    },
+  };
+}
+
+export function createQQBatchRecallMessagesTool(_ctx?: any) {
+  return {
+    name: "qq_batch_recall_messages",
+    label: "QQ 批量撤回消息",
+    description: "批量撤回多条 QQ 消息。需要提供消息 ID 列表（最多 50 条）。仅管理员可触发。Bot 只能撤回自己发送的消息或群管理员权限可撤回的消息。",
+    parameters: QQBatchRecallMessagesSchema,
+    execute: async (_toolCallId: string, rawParams: unknown) => {
+      const params = rawParams as QQBatchRecallMessagesParams;
+      const { client, error } = resolveClient();
+      if (!client) return toolResult(error!);
+
+      const results: Array<{ id: string; ok: boolean; error?: string }> = [];
+      for (const msgId of params.message_ids) {
+        try {
+          await (client as any).sendWithResponse("delete_msg", { message_id: msgId }, 10000);
+          results.push({ id: msgId, ok: true });
+        } catch (err) {
+          results.push({ id: msgId, ok: false, error: String(err) });
+        }
+      }
+
+      const succeeded = results.filter(r => r.ok).length;
+      const failed = results.filter(r => !r.ok).length;
+      const summary = results.map(r => r.ok ? `✅ ${r.id}` : `❌ ${r.id}: ${r.error}`).join("\n");
+      return toolResult(
+        `批量撤回完成：${succeeded} 成功，${failed} 失败\n${summary}`,
+        { succeeded, failed, results },
+      );
     },
   };
 }
