@@ -26,7 +26,7 @@ const QQSendMessageSchema = {
     },
     message: {
       type: "string" as const,
-      description: "要发送的消息文本内容",
+      description: "要发送的消息文本内容。发送图片时使用 MEDIA: 前缀加绝对路径，例如 'MEDIA:/path/to/image.png'，系统会自动将图片转为 base64 发送。可以混合文本和图片，例如 '这是截图 MEDIA:/tmp/screenshot.png 请查看'。",
       maxLength: 4500,
     },
     forward: {
@@ -260,7 +260,7 @@ export function createQQSendMessageTool(_ctx?: any) {
   return {
     name: "qq_send_message",
     label: "QQ 发送消息",
-    description: "向 QQ 群或私聊主动发送消息。支持普通文本和合并转发形式。仅管理员可触发。",
+    description: "向 QQ 群或私聊主动发送消息。支持普通文本和图片（使用 MEDIA:/path 前缀发送图片）。当需要向 QQ 发送截图或文件中的图片时，必须使用此工具，不要直接输出 MEDIA: 文本或用 exec 执行命令。仅管理员可触发。",
     parameters: QQSendMessageSchema,
     execute: async (_toolCallId: string, rawParams: unknown) => {
       const params = rawParams as QQSendMessageParams;
