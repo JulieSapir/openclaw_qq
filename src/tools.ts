@@ -28,8 +28,7 @@ const QQSendMessageSchema = {
     },
     message: {
       type: "string" as const,
-      description: "要发送的消息文本内容。纯发图片时可留空，改用 image_path 参数。",
-      maxLength: 4500,
+      description: "要发送的消息文本内容（最长4500字）。纯发图片时可留空，改用 image_path 参数。",
     },
     image_path: {
       type: "string" as const,
@@ -41,8 +40,7 @@ const QQSendMessageSchema = {
     },
     forward_node_name: {
       type: "string" as const,
-      description: "合并转发时显示的发送者昵称，默认 OpenClaw",
-      maxLength: 20,
+      description: "合并转发时显示的发送者昵称（最长20字），默认 OpenClaw",
     },
   },
   required: ["target_type", "target_id"],
@@ -67,9 +65,7 @@ const QQGetContextSchema = {
     },
     count: {
       type: "number" as const,
-      description: "获取消息数量（group_history 时可选，默认 20，最大 50）",
-      minimum: 1,
-      maximum: 50,
+      description: "获取消息数量（group_history 时可选，默认 20，范围 1-50）",
     },
     message_seq: {
       type: "string" as const,
@@ -98,14 +94,12 @@ const QQForwardMessageSchema = {
     },
     messages: {
       type: "array" as const,
-      description: "要合并转发的消息列表",
-      minItems: 1,
-      maxItems: 50,
+      description: "要合并转发的消息列表（1-50条）",
       items: {
         type: "object" as const,
         properties: {
-          name: { type: "string" as const, description: "转发节点显示的发送者昵称", maxLength: 20 },
-          content: { type: "string" as const, description: "节点消息内容", maxLength: 4500 },
+          name: { type: "string" as const, description: "转发节点显示的发送者昵称（最长20字）" },
+          content: { type: "string" as const, description: "节点消息内容（最长4500字）" },
         },
         required: ["name", "content"],
       },
@@ -132,10 +126,8 @@ const QQBatchRecallMessagesSchema = {
   properties: {
     message_ids: {
       type: "array" as const,
-      description: "要撤回的消息 ID 列表",
+      description: "要撤回的消息 ID 列表（1-50条）",
       items: { type: "string" as const },
-      minItems: 1,
-      maxItems: 50,
     },
   },
   required: ["message_ids"],
