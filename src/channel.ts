@@ -20,7 +20,7 @@ import {
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import { OneBotClient } from "./client.js";
 import { QQConfigSchema, type QQConfig } from "./config.js";
-import { getQQRuntime } from "./runtime.js";
+import { getQQRuntime, registerQQClient, unregisterQQClient } from "./runtime.js";
 import type { OneBotMessage, OneBotMessageSegment } from "./types.js";
 
 export type ResolvedQQAccount = ChannelAccountSnapshot & {
@@ -2792,6 +2792,7 @@ export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
             const isStaleGeneration = () => accountStartGeneration.get(account.accountId) !== accountGen;
 
             clients.set(account.accountId, client);
+            registerQQClient(account.accountId, client, config as unknown as Record<string, unknown>);
             const clientSet = allClientsByAccount.get(account.accountId) || new Set<OneBotClient>();
             clientSet.add(client);
             allClientsByAccount.set(account.accountId, clientSet);
@@ -4165,6 +4166,7 @@ ${current}
                 }
                 client.disconnect();
                 clients.delete(account.accountId);
+                unregisterQQClient(account.accountId);
                 accountConfigs.delete(account.accountId);
                 const setForAccount = allClientsByAccount.get(account.accountId);
                 if (setForAccount) {
