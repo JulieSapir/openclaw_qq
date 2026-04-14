@@ -8,7 +8,7 @@
 
 import { getRegisteredClient } from "./runtime.js";
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 
@@ -180,13 +180,23 @@ interface QQBatchRecallMessagesParams {
  * workspace 目录：Agent 的工作目录，MEDIA: 相对路径基于此解析
  */
 const WORKSPACE_DIR = resolve(homedir(), ".openclaw", "workspace");
+const BROWSER_MEDIA_DIR = resolve(homedir(), ".openclaw", "media", "browser");
+
+/** 图片文件最大大小：10MB */
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 
 /**
- * 解析文件路径：相对路径基于 workspace 目录，绝对路径直接使用
+ * 解析文件路径：相对路径基于 workspace 目录，绝对路径直接使用。
+ * 安全约束：解析后的路径必须位于 WORKSPACE_DIR 或 BROWSER_MEDIA_DIR 内，
+ * 防止路径遍历攻击（如 ../../etc/passwd）。
  */
 function resolveFilePath(rawPath: string): string {
-  if (isAbsolute(rawPath)) return rawPath;
-  return resolve(WORKSPACE_DIR, rawPath);
+  const resolved = isAbsolute(rawPath) ? resolve(rawPath) : resolve(WORKSPACE_DIR, rawPath);
+  // 路径遍历防护：必须在允许的目录内
+  if (!resolved.startsWith(WORKSPACE_DIR) && !resolved.startsWith(BROWSER_MEDIA_DIR)) {
+    throw new Error(`路径安全限制：${rawPath} 超出允许的目录范围`);
+  }
+  return resolved;
 }
 
 /**
@@ -208,6 +218,29 @@ function isValidImageBuffer(buffer: Buffer): boolean {
 }
 
 /**
+ * 读取图片文件并验证：magic bytes 检查 + base64 文本 fallback + 大小限制。
+ * 返回 base64 字符串（成功）或错误描述（失败）。
+ */
+async function readAndValidateImage(filePath: string, displayPath: string): Promise<{ ok: true; base64: string } | { ok: false; error: string }> {
+  const buffer = await readFile(filePath);
+  if (buffer.length > MAX_IMAGE_SIZE) {
+    return { ok: false, error: `[图片过大：${displayPath}（${(buffer.length / 1024 / 1024).toFixed(1)}MB），限制 ${MAX_IMAGE_SIZE / 1024 / 1024}MB]` };
+  }
+  if (isValidImageBuffer(buffer)) {
+    return { ok: true, base64: buffer.toString("base64") };
+  }
+  // Agent 可能用 write 工具把 base64 文本写入了文件（未解码），尝试当 base64 解码
+  const text = buffer.toString("utf-8").trim();
+  if (/^[A-Za-z0-9+/]+=*$/.test(text) && text.length > 100) {
+    const decoded = Buffer.from(text, "base64");
+    if (isValidImageBuffer(decoded)) {
+      return { ok: true, base64: text };
+    }
+  }
+  return { ok: false, error: `[图片无效：${displayPath} 不是有效的图片文件（${buffer.length} 字节）]` };
+}
+
+/**
  * 将 MEDIA: 前缀的文件路径转换为 base64 图片 CQ 码。
  * NapCat 运行在远程 VPS，无法访问容器本地文件，
  * 因此需要将图片读取为 base64 再发送。
@@ -220,29 +253,18 @@ async function resolveMediaContent(content: string): Promise<string> {
 
   while ((match = mediaRegex.exec(content)) !== null) {
     const rawPath = match[1];
-    const filePath = resolveFilePath(rawPath);
-    if (existsSync(filePath)) {
-      try {
-        const buffer = await readFile(filePath);
-        if (isValidImageBuffer(buffer)) {
-          // 直接是二进制图片
-          const base64 = buffer.toString("base64");
-          replacements.push({ full: match[0], replacement: `[CQ:image,file=base64://${base64}]` });
-          continue;
+    try {
+      const filePath = resolveFilePath(rawPath);
+      if (existsSync(filePath)) {
+        const result = await readAndValidateImage(filePath, rawPath);
+        if (result.ok) {
+          replacements.push({ full: match[0], replacement: `[CQ:image,file=base64://${result.base64}]` });
+        } else {
+          replacements.push({ full: match[0], replacement: result.error });
         }
-        // Agent 可能用 write 工具把 base64 文本写入了文件（未解码），尝试当 base64 解码
-        const text = buffer.toString("utf-8").trim();
-        if (/^[A-Za-z0-9+/]+=*$/.test(text) && text.length > 100) {
-          const decoded = Buffer.from(text, "base64");
-          if (isValidImageBuffer(decoded)) {
-            replacements.push({ full: match[0], replacement: `[CQ:image,file=base64://${text}]` });
-            continue;
-          }
-        }
-        replacements.push({ full: match[0], replacement: `[图片无效：${rawPath} 不是有效的图片文件（${buffer.length} 字节）]` });
-      } catch {
-        // 读取失败保留原文
       }
+    } catch (err) {
+      replacements.push({ full: match[0], replacement: `[路径错误：${String(err)}]` });
     }
   }
 
@@ -266,30 +288,18 @@ async function resolveForwardNodeContent(content: string): Promise<string | Arra
   if (!match) return content;
 
   const rawPath = match[1];
-  const filePath = resolveFilePath(rawPath);
-  if (!existsSync(filePath)) return content;
-
   try {
-    const buffer = await readFile(filePath);
-    if (isValidImageBuffer(buffer)) {
-      const base64 = buffer.toString("base64");
-      return [{ type: "image", data: { file: `base64://${base64}` } }];
+    const filePath = resolveFilePath(rawPath);
+    if (!existsSync(filePath)) return content;
+    const result = await readAndValidateImage(filePath, rawPath);
+    if (result.ok) {
+      return [{ type: "image", data: { file: `base64://${result.base64}` } }];
     }
-    // 尝试当 base64 文本解码
-    const text = buffer.toString("utf-8").trim();
-    if (/^[A-Za-z0-9+/]+=*$/.test(text) && text.length > 100) {
-      const decoded = Buffer.from(text, "base64");
-      if (isValidImageBuffer(decoded)) {
-        return [{ type: "image", data: { file: `base64://${text}` } }];
-      }
-    }
-    return `[图片无效：${rawPath} 不是有效的图片文件（${buffer.length} 字节）]`;
-  } catch {
-    return content;
+    return result.error;
+  } catch (err) {
+    return `[路径错误：${String(err)}]`;
   }
 }
-
-const BROWSER_MEDIA_DIR = resolve(homedir(), ".openclaw", "media", "browser");
 
 /**
  * 解析 image_path 参数为 CQ 图片码。
@@ -303,7 +313,6 @@ async function resolveImagePath(imagePath: string): Promise<string> {
     if (!existsSync(BROWSER_MEDIA_DIR)) {
       return "[错误：browser 媒体目录不存在，请先使用 browser 的 screenshot action 截图]";
     }
-    const { readdirSync, statSync } = require("node:fs");
     const files = (readdirSync(BROWSER_MEDIA_DIR) as string[])
       .map((name: string) => ({ name, mtime: statSync(resolve(BROWSER_MEDIA_DIR, name)).mtimeMs }))
       .sort((a: { mtime: number }, b: { mtime: number }) => b.mtime - a.mtime);
@@ -325,20 +334,11 @@ async function resolveImagePath(imagePath: string): Promise<string> {
     return `[错误：图片文件不存在：${filePath}]`;
   }
 
-  const buffer = await readFile(filePath);
-  if (isValidImageBuffer(buffer)) {
-    const base64 = buffer.toString("base64");
-    return `[CQ:image,file=base64://${base64}]`;
+  const result = await readAndValidateImage(filePath, imagePath);
+  if (result.ok) {
+    return `[CQ:image,file=base64://${result.base64}]`;
   }
-  // 尝试 base64 文本
-  const text = buffer.toString("utf-8").trim();
-  if (/^[A-Za-z0-9+/]+=*$/.test(text) && text.length > 100) {
-    const decoded = Buffer.from(text, "base64");
-    if (isValidImageBuffer(decoded)) {
-      return `[CQ:image,file=base64://${text}]`;
-    }
-  }
-  return `[图片无效：${imagePath} 不是有效的图片文件（${buffer.length} 字节）]`;
+  return result.error;
 }
 
 function resolveClient(accountId?: string) {
