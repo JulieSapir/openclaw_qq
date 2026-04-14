@@ -336,8 +336,7 @@ export function createQQForwardMessageTool(_ctx?: any) {
         },
       })));
 
-      try {
-        if (params.target_type === "group") {
+      if (params.target_type === "group") {
           // 群合并转发：先尝试 send_group_forward_msg，失败尝试 send_forward_msg
           let lastErr: unknown;
           try {
@@ -365,28 +364,30 @@ export function createQQForwardMessageTool(_ctx?: any) {
         }
 
         // 私聊合并转发
-        let lastErr: unknown;
-        try {
-          await (client as any).sendWithResponse(
-            "send_private_forward_msg",
-            { user_id: params.target_id, messages: forwardNodes },
-            15000,
-          );
-          return {
-            output: `已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点）`,
-          };
-        } catch (e) { lastErr = e; }
-        try {
-          await (client as any).sendWithResponse(
-            "send_forward_msg",
-            { user_id: params.target_id, messages: forwardNodes },
-            15000,
-          );
-          return {
-            output: `已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点，fallback）`,
-          };
-        } catch (e) {
-          return { output: `合并转发失败（两种 API 均失败）：\n- send_private_forward_msg: ${String(lastErr)}\n- send_forward_msg: ${String(e)}` };
+        {
+          let lastErr: unknown;
+          try {
+            await (client as any).sendWithResponse(
+              "send_private_forward_msg",
+              { user_id: params.target_id, messages: forwardNodes },
+              15000,
+            );
+            return {
+              output: `已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点）`,
+            };
+          } catch (e) { lastErr = e; }
+          try {
+            await (client as any).sendWithResponse(
+              "send_forward_msg",
+              { user_id: params.target_id, messages: forwardNodes },
+              15000,
+            );
+            return {
+              output: `已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点，fallback）`,
+            };
+          } catch (e) {
+            return { output: `合并转发失败（两种 API 均失败）：\n- send_private_forward_msg: ${String(lastErr)}\n- send_forward_msg: ${String(e)}` };
+          }
         }
     },
   };
