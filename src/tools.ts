@@ -28,12 +28,16 @@ const QQSendMessageSchema = {
     },
     message: {
       type: "string" as const,
-      description: "要发送的消息文本内容。也可以使用 MEDIA:/path 前缀嵌入图片文件。纯发图片时可留空，改用 image_base64 参数。",
+      description: "要发送的消息文本内容。纯发图片时可留空，改用 image_base64 或 image_path 参数。",
       maxLength: 4500,
     },
     image_base64: {
       type: "string" as const,
-      description: "图片的 base64 编码数据（不含 data: 前缀）。发送 browser 截图时优先使用此参数——browser 截图工具返回的是内联图片，将其 base64 数据直接填入此参数即可，不需要先用 write 写文件。",
+      description: "图片的 base64 编码数据（不含 data: 前缀）。browser 截图返回的内联图片可直接填入此参数。",
+    },
+    image_path: {
+      type: "string" as const,
+      description: "图片文件的路径。可以用 MEDIA:browser:latest 发送最近一次 browser 截图，也可以用绝对或相对路径指定文件。",
     },
     forward: {
       type: "boolean" as const,
@@ -147,6 +151,7 @@ interface QQSendMessageParams {
   target_id: number;
   message: string;
   image_base64?: string;
+  image_path?: string;
   forward?: boolean;
   forward_node_name?: string;
 }
@@ -289,6 +294,52 @@ async function resolveForwardNodeContent(content: string): Promise<string | Arra
   }
 }
 
+const BROWSER_MEDIA_DIR = resolve(homedir(), ".openclaw", "media", "browser");
+
+/**
+ * 解析 image_path 参数为 CQ 图片码。
+ * 支持 browser:latest 快捷方式（最近一次 browser 截图）。
+ */
+async function resolveImagePath(imagePath: string): Promise<string> {
+  let filePath: string;
+
+  if (imagePath === "browser:latest") {
+    // 查找 browser 媒体目录中最新的文件
+    if (!existsSync(BROWSER_MEDIA_DIR)) {
+      return "[错误：browser 媒体目录不存在，请先使用 browser 截图]";
+    }
+    const { readdirSync, statSync } = require("node:fs");
+    const files = (readdirSync(BROWSER_MEDIA_DIR) as string[])
+      .map((name: string) => ({ name, mtime: statSync(resolve(BROWSER_MEDIA_DIR, name)).mtimeMs }))
+      .sort((a: { mtime: number }, b: { mtime: number }) => b.mtime - a.mtime);
+    if (files.length === 0) {
+      return "[错误：browser 媒体目录为空，请先使用 browser 截图]";
+    }
+    filePath = resolve(BROWSER_MEDIA_DIR, files[0].name);
+  } else {
+    filePath = resolveFilePath(imagePath);
+  }
+
+  if (!existsSync(filePath)) {
+    return `[错误：图片文件不存在：${filePath}]`;
+  }
+
+  const buffer = await readFile(filePath);
+  if (isValidImageBuffer(buffer)) {
+    const base64 = buffer.toString("base64");
+    return `[CQ:image,file=base64://${base64}]`;
+  }
+  // 尝试 base64 文本
+  const text = buffer.toString("utf-8").trim();
+  if (/^[A-Za-z0-9+/]+=*$/.test(text) && text.length > 100) {
+    const decoded = Buffer.from(text, "base64");
+    if (isValidImageBuffer(decoded)) {
+      return `[CQ:image,file=base64://${text}]`;
+    }
+  }
+  return `[图片无效：${imagePath} 不是有效的图片文件（${buffer.length} 字节）]`;
+}
+
 function resolveClient(accountId?: string) {
   const client = getRegisteredClient(accountId);
   if (!client || !client.isConnected()) {
@@ -343,23 +394,35 @@ export function createQQSendMessageTool(_ctx?: any) {
       const { client, error } = resolveClient();
       if (!client) return toolResult(error!);
 
-      if (!params.message && !params.image_base64) {
-        return toolResult("message 和 image_base64 至少需要提供一个");
+      if (!params.message && !params.image_base64 && !params.image_path) {
+        return toolResult("message、image_base64、image_path 至少需要提供一个");
       }
 
-      // 构建最终消息：优先 image_base64，其次 MEDIA: 前缀处理
-      let resolvedMessage: string;
+      // 构建最终消息
+      let resolvedMessage: string = "";
+      const parts: string[] = [];
+
+      // 处理文本消息（含 MEDIA: 前缀）
+      if (params.message) {
+        parts.push(await resolveMediaContent(params.message));
+      }
+
+      // 处理 image_path 参数
+      if (params.image_path) {
+        const imgCQ = await resolveImagePath(params.image_path);
+        parts.push(imgCQ);
+      }
+
+      // 处理 image_base64 参数
       if (params.image_base64) {
-        // 验证 base64 内容是有效图片
         const decoded = Buffer.from(params.image_base64, "base64");
         if (!isValidImageBuffer(decoded)) {
           return toolResult(`图片无效：base64 数据不是有效的图片格式（解码后 ${decoded.length} 字节）`);
         }
-        const imageCQ = `[CQ:image,file=base64://${params.image_base64}]`;
-        resolvedMessage = params.message ? `${await resolveMediaContent(params.message)}${imageCQ}` : imageCQ;
-      } else {
-        resolvedMessage = await resolveMediaContent(params.message || "");
+        parts.push(`[CQ:image,file=base64://${params.image_base64}]`);
       }
+
+      resolvedMessage = parts.join("");
 
       try {
         if (params.target_type === "group") {
