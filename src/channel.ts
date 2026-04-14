@@ -8,14 +8,14 @@ import { promisify } from "node:util";
 
 declare const process: any;
 import {
-    type ChannelPlugin,
-    type ChannelAccountSnapshot,
-    type ChannelSetupInput,
-    type OpenClawConfig,
-    buildChannelConfigSchema,
-    type ReplyPayload,
-    applyAccountNameToChannelSection,
-    migrateBaseNameToDefaultAccount,
+  type ChannelPlugin,
+  type ChannelAccountSnapshot,
+  type ChannelSetupInput,
+  type OpenClawConfig,
+  buildChannelConfigSchema,
+  type ReplyPayload,
+  applyAccountNameToChannelSection,
+  migrateBaseNameToDefaultAccount,
 } from "openclaw/plugin-sdk";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import { OneBotClient } from "./client.js";
@@ -24,140 +24,141 @@ import { getQQRuntime, registerQQClient, unregisterQQClient } from "./runtime.js
 import type { OneBotMessage, OneBotMessageSegment } from "./types.js";
 
 export type ResolvedQQAccount = ChannelAccountSnapshot & {
-    config: QQConfig;
-    client?: OneBotClient;
+  config: QQConfig;
+  client?: OneBotClient;
 };
 
 interface PendingQQMsg {
-    ctxPayload: any;
-    runEpoch: number;
-    executeDispatch: (mergedCtx: any, runState: { isStale: () => boolean }) => Promise<void>;
+  ctxPayload: any;
+  runEpoch: number;
+  executeDispatch: (mergedCtx: any, runState: { isStale: () => boolean }) => Promise<void>;
 }
 
 interface SessionQueue {
-    pendingPayloads: PendingQQMsg[];
-    timer: ReturnType<typeof setTimeout> | null;
-    isProcessing: boolean;
-    latestEpoch: number;
-    activeEpoch: number;
+  pendingPayloads: PendingQQMsg[];
+  timer: ReturnType<typeof setTimeout> | null;
+  isProcessing: boolean;
+  latestEpoch: number;
+  activeEpoch: number;
 }
 
 type OneBotImageHint = {
-    url: string;
-    fileName?: string;
-    mimeType?: string;
+  url: string;
+  fileName?: string;
+  mimeType?: string;
 };
 
 type InboundMediaEntry = {
-    url?: string;
-    path?: string;
-    type?: string;
+  url?: string;
+  path?: string;
+  type?: string;
 };
 
 type QQInboundAttachmentHint = {
-    kind: "file" | "audio";
-    name: string;
-    url?: string;
-    localPath?: string;
-    fileId?: string;
-    busid?: string;
-    size?: number;
-    mimeType?: string;
+  kind: "file" | "audio";
+  name: string;
+  url?: string;
+  localPath?: string;
+  fileId?: string;
+  busid?: string;
+  size?: number;
+  mimeType?: string;
 };
 
 type QQSetupInput = ChannelSetupInput & {
-    wsUrl?: string;
+  wsUrl?: string;
 };
 
 const sessionQueues = new Map<string, SessionQueue>();
 
 async function drainSessionQueue(sessionKey: string, config: QQConfig, sendMessageFn: (msg: string) => void) {
-    const q = sessionQueues.get(sessionKey);
-    if (!q || q.isProcessing || q.pendingPayloads.length === 0) return;
-    const interruptOnNewMessage = config.interruptOnNewMessage === true;
+  const q = sessionQueues.get(sessionKey);
+  if (!q || q.isProcessing || q.pendingPayloads.length === 0) return;
+  const interruptOnNewMessage = config.interruptOnNewMessage === true;
 
-    q.isProcessing = true;
-    const payloads = q.pendingPayloads;
-    q.pendingPayloads = [];
-    const runEpoch = payloads[payloads.length - 1]?.runEpoch ?? q.latestEpoch;
-    q.activeEpoch = runEpoch;
-    try {
-        const mergedCtx = { ...payloads[0].ctxPayload };
-        if (payloads.length > 1) {
-            const mergeText = (key: string) => {
-                if (payloads.some(p => typeof p.ctxPayload[key] === "string")) {
-                    mergedCtx[key] = payloads.map((p, i) => {
-                        const val = p.ctxPayload[key] || p.ctxPayload.Body || p.ctxPayload.RawBody || "";
-                        return `[消息 ${i + 1}]: ${val}`;
-                    }).join("\n\n");
-                }
-            };
-
-            mergeText("Body");
-            mergeText("RawBody");
-            mergeText("BodyForAgent");
-            mergeText("BodyForCommands");
-            mergeText("CommandBody");
-
-            const mergedMediaPayload = buildInboundMediaPayloadFromEntries(
-                payloads.flatMap((p) => collectInboundMediaEntriesFromCtx(p.ctxPayload))
-            );
-            Object.assign(mergedCtx, mergedMediaPayload);
-
-            if (config.enableQueueNotify !== false) {
-                sendMessageFn(`[OpenClawQQ] 已合并 ${payloads.length} 条连续消息并开始处理。`);
-            }
+  q.isProcessing = true;
+  const payloads = q.pendingPayloads;
+  q.pendingPayloads = [];
+  const runEpoch = payloads[payloads.length - 1]?.runEpoch ?? q.latestEpoch;
+  q.activeEpoch = runEpoch;
+  try {
+    const mergedCtx = { ...payloads[0].ctxPayload };
+    if (payloads.length > 1) {
+      const mergeText = (key: string) => {
+        if (payloads.some((p) => typeof p.ctxPayload[key] === "string")) {
+          mergedCtx[key] = payloads
+            .map((p, i) => {
+              const val = p.ctxPayload[key] || p.ctxPayload.Body || p.ctxPayload.RawBody || "";
+              return `[消息 ${i + 1}]: ${val}`;
+            })
+            .join("\n\n");
         }
+      };
 
-        await payloads[0].executeDispatch(mergedCtx, {
-            isStale: () => {
-                const state = sessionQueues.get(sessionKey);
-                if (!state) return true;
-                if (state.activeEpoch !== runEpoch) return true;
-                return interruptOnNewMessage && state.latestEpoch !== runEpoch;
-            },
-        });
+      mergeText("Body");
+      mergeText("RawBody");
+      mergeText("BodyForAgent");
+      mergeText("BodyForCommands");
+      mergeText("CommandBody");
 
-    } finally {
-        q.isProcessing = false;
-        q.activeEpoch = 0;
-        if (q.pendingPayloads.length > 0 && !q.timer) {
-            setTimeout(() => { void drainSessionQueue(sessionKey, config, sendMessageFn); }, 0);
-        } else if (q.pendingPayloads.length === 0) {
-            sessionQueues.delete(sessionKey);
-        }
+      const mergedMediaPayload = buildInboundMediaPayloadFromEntries(payloads.flatMap((p) => collectInboundMediaEntriesFromCtx(p.ctxPayload)));
+      Object.assign(mergedCtx, mergedMediaPayload);
+
+      if (config.enableQueueNotify !== false) {
+        sendMessageFn(`[OpenClawQQ] 已合并 ${payloads.length} 条连续消息并开始处理。`);
+      }
     }
+
+    await payloads[0].executeDispatch(mergedCtx, {
+      isStale: () => {
+        const state = sessionQueues.get(sessionKey);
+        if (!state) return true;
+        if (state.activeEpoch !== runEpoch) return true;
+        return interruptOnNewMessage && state.latestEpoch !== runEpoch;
+      },
+    });
+  } finally {
+    q.isProcessing = false;
+    q.activeEpoch = 0;
+    if (q.pendingPayloads.length > 0 && !q.timer) {
+      setTimeout(() => {
+        void drainSessionQueue(sessionKey, config, sendMessageFn);
+      }, 0);
+    } else if (q.pendingPayloads.length === 0) {
+      sessionQueues.delete(sessionKey);
+    }
+  }
 }
 
 function enqueueQQMessageForDispatch(sessionKey: string, msg: PendingQQMsg, config: QQConfig, sendMessageFn: (msg: string) => void) {
-    let q = sessionQueues.get(sessionKey);
-    if (!q) {
-        q = { pendingPayloads: [], timer: null, isProcessing: false, latestEpoch: 0, activeEpoch: 0 };
-        sessionQueues.set(sessionKey, q);
+  let q = sessionQueues.get(sessionKey);
+  if (!q) {
+    q = { pendingPayloads: [], timer: null, isProcessing: false, latestEpoch: 0, activeEpoch: 0 };
+    sessionQueues.set(sessionKey, q);
+  }
+
+  q.latestEpoch += 1;
+  msg.runEpoch = q.latestEpoch;
+  q.pendingPayloads.push(msg);
+
+  if (config.interruptOnNewMessage === true && q.isProcessing && q.activeEpoch > 0) {
+    if (config.enableQueueNotify !== false) {
+      sendMessageFn("[OpenClawQQ] 检测到新消息，正在中断上一轮回复并切换到新请求。");
     }
+  }
 
-    q.latestEpoch += 1;
-    msg.runEpoch = q.latestEpoch;
-    q.pendingPayloads.push(msg);
+  if (q.timer) clearTimeout(q.timer);
 
-    if (config.interruptOnNewMessage === true && q.isProcessing && q.activeEpoch > 0) {
-        if (config.enableQueueNotify !== false) {
-            sendMessageFn("[OpenClawQQ] 检测到新消息，正在中断上一轮回复并切换到新请求。");
-        }
-    }
+  const debounceMs = config.queueDebounceMs ?? 3000;
 
-    if (q.timer) clearTimeout(q.timer);
-
-    const debounceMs = config.queueDebounceMs ?? 3000;
-
-    q.timer = setTimeout(() => {
-        q!.timer = null;
-        void drainSessionQueue(sessionKey, config, sendMessageFn);
-    }, debounceMs);
+  q.timer = setTimeout(() => {
+    q!.timer = null;
+    void drainSessionQueue(sessionKey, config, sendMessageFn);
+  }, debounceMs);
 }
 
-const memberCache = new Map<string, { name: string, time: number }>();
-const groupInfoCache = new Map<string, { name: string, time: number }>();
+const memberCache = new Map<string, { name: string; time: number }>();
+const groupInfoCache = new Map<string, { name: string; time: number }>();
 const execFile = promisify(execFileCallback);
 const QQ_INBOUND_MEDIA_DIR = path.join(process.env.HOME || homedir(), ".openclaw", "media", "inbound", "qq");
 const QQ_INBOUND_MEDIA_MAX_BYTES = 10 * 1024 * 1024;
@@ -166,1220 +167,1121 @@ const QQ_INBOUND_MEDIA_FETCH_TIMEOUT_MS = 15000;
 const DEFAULT_QQ_IMAGE_MIME = "image/jpeg";
 const DEFAULT_QQ_BINARY_MIME = "application/octet-stream";
 const IMAGE_EXT_TO_MIME = new Map<string, string>([
-    [".png", "image/png"],
-    [".jpg", "image/jpeg"],
-    [".jpeg", "image/jpeg"],
-    [".gif", "image/gif"],
-    [".webp", "image/webp"],
-    [".bmp", "image/bmp"],
-    [".tif", "image/tiff"],
-    [".tiff", "image/tiff"],
-    [".heic", "image/heic"],
-    [".heif", "image/heif"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+  [".bmp", "image/bmp"],
+  [".tif", "image/tiff"],
+  [".tiff", "image/tiff"],
+  [".heic", "image/heic"],
+  [".heif", "image/heif"],
 ]);
 const IMAGE_MIME_TO_EXT = new Map<string, string>([
-    ["image/png", ".png"],
-    ["image/jpeg", ".jpg"],
-    ["image/gif", ".gif"],
-    ["image/webp", ".webp"],
-    ["image/bmp", ".bmp"],
-    ["image/tiff", ".tiff"],
-    ["image/heic", ".heic"],
-    ["image/heif", ".heif"],
+  ["image/png", ".png"],
+  ["image/jpeg", ".jpg"],
+  ["image/gif", ".gif"],
+  ["image/webp", ".webp"],
+  ["image/bmp", ".bmp"],
+  ["image/tiff", ".tiff"],
+  ["image/heic", ".heic"],
+  ["image/heif", ".heif"],
 ]);
 const GENERIC_EXT_TO_MIME = new Map<string, string>([
-    ...IMAGE_EXT_TO_MIME.entries(),
-    [".amr", "audio/amr"],
-    [".silk", "audio/silk"],
-    [".wav", "audio/wav"],
-    [".mp3", "audio/mpeg"],
-    [".m4a", "audio/mp4"],
-    [".ogg", "audio/ogg"],
-    [".oga", "audio/ogg"],
-    [".flac", "audio/flac"],
-    [".aac", "audio/aac"],
-    [".pdf", "application/pdf"],
-    [".txt", "text/plain"],
-    [".md", "text/markdown"],
-    [".csv", "text/csv"],
-    [".json", "application/json"],
-    [".zip", "application/zip"],
-    [".doc", "application/msword"],
-    [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
-    [".xls", "application/vnd.ms-excel"],
-    [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
-    [".ppt", "application/vnd.ms-powerpoint"],
-    [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  ...IMAGE_EXT_TO_MIME.entries(),
+  [".amr", "audio/amr"],
+  [".silk", "audio/silk"],
+  [".wav", "audio/wav"],
+  [".mp3", "audio/mpeg"],
+  [".m4a", "audio/mp4"],
+  [".ogg", "audio/ogg"],
+  [".oga", "audio/ogg"],
+  [".flac", "audio/flac"],
+  [".aac", "audio/aac"],
+  [".pdf", "application/pdf"],
+  [".txt", "text/plain"],
+  [".md", "text/markdown"],
+  [".csv", "text/csv"],
+  [".json", "application/json"],
+  [".zip", "application/zip"],
+  [".doc", "application/msword"],
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  [".xls", "application/vnd.ms-excel"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  [".ppt", "application/vnd.ms-powerpoint"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
 ]);
 const GENERIC_MIME_TO_EXT = new Map<string, string>([
-    ...IMAGE_MIME_TO_EXT.entries(),
-    ["audio/amr", ".amr"],
-    ["audio/silk", ".silk"],
-    ["audio/wav", ".wav"],
-    ["audio/mpeg", ".mp3"],
-    ["audio/mp4", ".m4a"],
-    ["audio/ogg", ".ogg"],
-    ["audio/flac", ".flac"],
-    ["audio/aac", ".aac"],
-    ["application/pdf", ".pdf"],
-    ["text/plain", ".txt"],
-    ["text/markdown", ".md"],
-    ["text/csv", ".csv"],
-    ["application/json", ".json"],
-    ["application/zip", ".zip"],
-    ["application/msword", ".doc"],
-    ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"],
-    ["application/vnd.ms-excel", ".xls"],
-    ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"],
-    ["application/vnd.ms-powerpoint", ".ppt"],
-    ["application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"],
+  ...IMAGE_MIME_TO_EXT.entries(),
+  ["audio/amr", ".amr"],
+  ["audio/silk", ".silk"],
+  ["audio/wav", ".wav"],
+  ["audio/mpeg", ".mp3"],
+  ["audio/mp4", ".m4a"],
+  ["audio/ogg", ".ogg"],
+  ["audio/flac", ".flac"],
+  ["audio/aac", ".aac"],
+  ["application/pdf", ".pdf"],
+  ["text/plain", ".txt"],
+  ["text/markdown", ".md"],
+  ["text/csv", ".csv"],
+  ["application/json", ".json"],
+  ["application/zip", ".zip"],
+  ["application/msword", ".doc"],
+  ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"],
+  ["application/vnd.ms-excel", ".xls"],
+  ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"],
+  ["application/vnd.ms-powerpoint", ".ppt"],
+  ["application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"],
 ]);
 
 async function runModelSyncScript(): Promise<{ ok: boolean; text: string }> {
-    const home = process.env.HOME || homedir();
-    const candidates = [
-        process.env.OPENCLAW_MODELSYNC_SCRIPT,
-        path.join(home, ".openclaw", "workspace", "scripts", "sync_wuju_allowed_models.sh"),
-    ].filter((v): v is string => Boolean(v && v.trim()));
+  const home = process.env.HOME || homedir();
+  const candidates = [process.env.OPENCLAW_MODELSYNC_SCRIPT, path.join(home, ".openclaw", "workspace", "scripts", "sync_wuju_allowed_models.sh")].filter((v): v is string => Boolean(v && v.trim()));
 
-    let scriptPath = "";
-    for (const candidate of candidates) {
-        try {
-            await fs.access(candidate, fsConstants.X_OK);
-            scriptPath = candidate;
-            break;
-        } catch { }
-    }
-    if (!scriptPath) {
-        return { ok: false, text: "未找到可执行同步脚本。请确认 ~/.openclaw/workspace/scripts/sync_wuju_allowed_models.sh 存在并有执行权限。" };
-    }
-
+  let scriptPath = "";
+  for (const candidate of candidates) {
     try {
-        const { stdout, stderr } = await execFile(scriptPath, [], {
-            timeout: 180000,
-            maxBuffer: 1024 * 1024 * 4,
-            env: process.env,
-        });
-        const merged = [stdout, stderr].filter(Boolean).join("\n").trim();
-        return { ok: true, text: merged || "模型同步完成。" };
-    } catch (err: any) {
-        const stdout = typeof err?.stdout === "string" ? err.stdout : "";
-        const stderr = typeof err?.stderr === "string" ? err.stderr : "";
-        const code = err?.code ?? "unknown";
-        const merged = [stdout, stderr].filter(Boolean).join("\n").trim();
-        const detail = merged ? `\n${merged}` : "";
-        return { ok: false, text: `模型同步失败（code=${code}）。${detail}` };
-    }
+      await fs.access(candidate, fsConstants.X_OK);
+      scriptPath = candidate;
+      break;
+    } catch {}
+  }
+  if (!scriptPath) {
+    return { ok: false, text: "未找到可执行同步脚本。请确认 ~/.openclaw/workspace/scripts/sync_wuju_allowed_models.sh 存在并有执行权限。" };
+  }
+
+  try {
+    const { stdout, stderr } = await execFile(scriptPath, [], {
+      timeout: 180000,
+      maxBuffer: 1024 * 1024 * 4,
+      env: process.env,
+    });
+    const merged = [stdout, stderr].filter(Boolean).join("\n").trim();
+    return { ok: true, text: merged || "模型同步完成。" };
+  } catch (err: any) {
+    const stdout = typeof err?.stdout === "string" ? err.stdout : "";
+    const stderr = typeof err?.stderr === "string" ? err.stderr : "";
+    const code = err?.code ?? "unknown";
+    const merged = [stdout, stderr].filter(Boolean).join("\n").trim();
+    const detail = merged ? `\n${merged}` : "";
+    return { ok: false, text: `模型同步失败（code=${code}）。${detail}` };
+  }
 }
 
 function getCachedMemberName(groupId: string, userId: string): string | null {
-    const key = `${groupId}:${userId}`;
-    const cached = memberCache.get(key);
-    if (cached && Date.now() - cached.time < 3600000) { // 1 hour cache
-        return cached.name;
-    }
-    return null;
+  const key = `${groupId}:${userId}`;
+  const cached = memberCache.get(key);
+  if (cached && Date.now() - cached.time < 3600000) {
+    // 1 hour cache
+    return cached.name;
+  }
+  return null;
 }
 
 function setCachedMemberName(groupId: string, userId: string, name: string) {
-    memberCache.set(`${groupId}:${userId}`, { name, time: Date.now() });
+  memberCache.set(`${groupId}:${userId}`, { name, time: Date.now() });
 }
 
 function getCachedGroupName(accountId: string, groupId: string): string | null {
-    const key = `${accountId}:${groupId}`;
-    const cached = groupInfoCache.get(key);
-    if (cached && Date.now() - cached.time < 3600000) {
-        return cached.name;
-    }
-    return null;
+  const key = `${accountId}:${groupId}`;
+  const cached = groupInfoCache.get(key);
+  if (cached && Date.now() - cached.time < 3600000) {
+    return cached.name;
+  }
+  return null;
 }
 
 function setCachedGroupName(accountId: string, groupId: string, name: string) {
-    groupInfoCache.set(`${accountId}:${groupId}`, { name, time: Date.now() });
+  groupInfoCache.set(`${accountId}:${groupId}`, { name, time: Date.now() });
 }
 
 function normalizeOneBotMediaUrlCandidate(value: unknown): string | undefined {
-    if (typeof value !== "string") return undefined;
-    const trimmed = value.trim().replace(/&amp;/g, "&");
-    if (!trimmed) return undefined;
-    if (/^(?:https?:\/\/|base64:\/\/|file:)/i.test(trimmed)) return trimmed;
-    if (trimmed.startsWith("/")) return `file://${trimmed}`;
-    return undefined;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim().replace(/&amp;/g, "&");
+  if (!trimmed) return undefined;
+  if (/^(?:https?:\/\/|base64:\/\/|file:)/i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/")) return `file://${trimmed}`;
+  return undefined;
 }
 
 function normalizeMimeTypeHint(value: unknown): string | undefined {
-    if (typeof value !== "string") return undefined;
-    const trimmed = value.split(";")[0]?.trim().toLowerCase();
-    return trimmed || undefined;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.split(";")[0]?.trim().toLowerCase();
+  return trimmed || undefined;
 }
 
 function inferImageMimeType(value: string | undefined): string | undefined {
-    if (!value) return undefined;
-    const local = toLocalPathIfAny(value) || value;
-    const clean = local.split("?")[0].split("#")[0];
-    const ext = path.extname(clean).toLowerCase();
-    return IMAGE_EXT_TO_MIME.get(ext);
+  if (!value) return undefined;
+  const local = toLocalPathIfAny(value) || value;
+  const clean = local.split("?")[0].split("#")[0];
+  const ext = path.extname(clean).toLowerCase();
+  return IMAGE_EXT_TO_MIME.get(ext);
 }
 
 function inferImageExtension(value: string | undefined): string | undefined {
-    if (!value) return undefined;
-    const local = toLocalPathIfAny(value) || value;
-    const clean = local.split("?")[0].split("#")[0];
-    const ext = path.extname(clean).toLowerCase();
-    if (IMAGE_EXT_TO_MIME.has(ext)) return ext;
-    return undefined;
+  if (!value) return undefined;
+  const local = toLocalPathIfAny(value) || value;
+  const clean = local.split("?")[0].split("#")[0];
+  const ext = path.extname(clean).toLowerCase();
+  if (IMAGE_EXT_TO_MIME.has(ext)) return ext;
+  return undefined;
 }
 
 function buildImageCachePath(sourceKey: string, extHint?: string): string {
-    const digest = createHash("sha1").update(sourceKey).digest("hex");
-    const ext = extHint && IMAGE_EXT_TO_MIME.has(extHint) ? extHint : ".img";
-    return path.join(QQ_INBOUND_MEDIA_DIR, `${digest}${ext}`);
+  const digest = createHash("sha1").update(sourceKey).digest("hex");
+  const ext = extHint && IMAGE_EXT_TO_MIME.has(extHint) ? extHint : ".img";
+  return path.join(QQ_INBOUND_MEDIA_DIR, `${digest}${ext}`);
 }
 
 function inferGenericMimeType(value: string | undefined): string | undefined {
-    if (!value) return undefined;
-    const local = toLocalPathIfAny(value) || value;
-    const clean = local.split("?")[0].split("#")[0];
-    const ext = path.extname(clean).toLowerCase();
-    return GENERIC_EXT_TO_MIME.get(ext);
+  if (!value) return undefined;
+  const local = toLocalPathIfAny(value) || value;
+  const clean = local.split("?")[0].split("#")[0];
+  const ext = path.extname(clean).toLowerCase();
+  return GENERIC_EXT_TO_MIME.get(ext);
 }
 
 function inferGenericExtension(value: string | undefined): string | undefined {
-    if (!value) return undefined;
-    const local = toLocalPathIfAny(value) || value;
-    const clean = local.split("?")[0].split("#")[0];
-    const ext = path.extname(clean).toLowerCase();
-    return GENERIC_EXT_TO_MIME.has(ext) ? ext : undefined;
+  if (!value) return undefined;
+  const local = toLocalPathIfAny(value) || value;
+  const clean = local.split("?")[0].split("#")[0];
+  const ext = path.extname(clean).toLowerCase();
+  return GENERIC_EXT_TO_MIME.has(ext) ? ext : undefined;
 }
 
 function buildAttachmentCachePath(sourceKey: string, extHint?: string): string {
-    const digest = createHash("sha1").update(sourceKey).digest("hex");
-    const ext = extHint || ".bin";
-    return path.join(QQ_INBOUND_MEDIA_DIR, `${digest}${ext}`);
+  const digest = createHash("sha1").update(sourceKey).digest("hex");
+  const ext = extHint || ".bin";
+  return path.join(QQ_INBOUND_MEDIA_DIR, `${digest}${ext}`);
 }
 
 async function cacheInboundAttachmentLocally(
-    url: string,
-    meta?: { fileName?: string; mimeType?: string },
-    maxBytes = QQ_INBOUND_ATTACHMENT_MAX_BYTES
+  url: string,
+  meta?: { fileName?: string; mimeType?: string },
+  maxBytes = QQ_INBOUND_ATTACHMENT_MAX_BYTES,
 ): Promise<{ path: string; mimeType: string } | null> {
-    const normalized = normalizeOneBotMediaUrlCandidate(url);
-    if (!normalized) return null;
+  const normalized = normalizeOneBotMediaUrlCandidate(url);
+  if (!normalized) return null;
 
-    const mimeTypeHint = normalizeMimeTypeHint(meta?.mimeType)
-        ?? inferGenericMimeType(meta?.fileName)
-        ?? inferGenericMimeType(normalized)
-        ?? DEFAULT_QQ_BINARY_MIME;
-    const extHint = inferGenericExtension(meta?.fileName)
-        ?? inferGenericExtension(normalized)
-        ?? GENERIC_MIME_TO_EXT.get(mimeTypeHint)
-        ?? ".bin";
-    const cacheKey = `${normalized}|${meta?.fileName || ""}|${mimeTypeHint}`;
-    const cachedPath = buildAttachmentCachePath(cacheKey, extHint);
+  const mimeTypeHint = normalizeMimeTypeHint(meta?.mimeType) ?? inferGenericMimeType(meta?.fileName) ?? inferGenericMimeType(normalized) ?? DEFAULT_QQ_BINARY_MIME;
+  const extHint = inferGenericExtension(meta?.fileName) ?? inferGenericExtension(normalized) ?? GENERIC_MIME_TO_EXT.get(mimeTypeHint) ?? ".bin";
+  const cacheKey = `${normalized}|${meta?.fileName || ""}|${mimeTypeHint}`;
+  const cachedPath = buildAttachmentCachePath(cacheKey, extHint);
 
-    try {
-        await fs.access(cachedPath, fsConstants.R_OK);
-        return { path: cachedPath, mimeType: mimeTypeHint };
-    } catch { }
+  try {
+    await fs.access(cachedPath, fsConstants.R_OK);
+    return { path: cachedPath, mimeType: mimeTypeHint };
+  } catch {}
 
-    await fs.mkdir(QQ_INBOUND_MEDIA_DIR, { recursive: true });
+  await fs.mkdir(QQ_INBOUND_MEDIA_DIR, { recursive: true });
 
-    const localPath = toLocalPathIfAny(normalized);
-    if (localPath) {
-        const stat = await fs.stat(localPath);
-        if (stat.size > maxBytes) {
-            throw new Error(`local attachment too large: ${stat.size}`);
-        }
-        await fs.copyFile(localPath, cachedPath);
-        return {
-            path: cachedPath,
-            mimeType: inferGenericMimeType(localPath) ?? mimeTypeHint,
-        };
+  const localPath = toLocalPathIfAny(normalized);
+  if (localPath) {
+    const stat = await fs.stat(localPath);
+    if (stat.size > maxBytes) {
+      throw new Error(`local attachment too large: ${stat.size}`);
+    }
+    await fs.copyFile(localPath, cachedPath);
+    return {
+      path: cachedPath,
+      mimeType: inferGenericMimeType(localPath) ?? mimeTypeHint,
+    };
+  }
+
+  if (/^base64:\/\//i.test(normalized)) {
+    const buffer = Buffer.from(normalized.slice("base64://".length), "base64");
+    if (buffer.byteLength > maxBytes) {
+      throw new Error(`base64 attachment too large: ${buffer.byteLength}`);
+    }
+    await fs.writeFile(cachedPath, buffer);
+    return { path: cachedPath, mimeType: mimeTypeHint };
+  }
+
+  if (!/^https?:\/\//i.test(normalized)) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), QQ_INBOUND_MEDIA_FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetch(normalized, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "OpenClawQQ/1.0",
+      },
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+    const contentLength = Number(resp.headers.get("content-length") || "0");
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw new Error(`remote attachment too large: ${contentLength}`);
     }
 
-    if (/^base64:\/\//i.test(normalized)) {
-        const buffer = Buffer.from(normalized.slice("base64://".length), "base64");
-        if (buffer.byteLength > maxBytes) {
-            throw new Error(`base64 attachment too large: ${buffer.byteLength}`);
-        }
-        await fs.writeFile(cachedPath, buffer);
-        return { path: cachedPath, mimeType: mimeTypeHint };
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    if (buffer.byteLength > maxBytes) {
+      throw new Error(`remote attachment too large after download: ${buffer.byteLength}`);
     }
 
-    if (!/^https?:\/\//i.test(normalized)) return null;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), QQ_INBOUND_MEDIA_FETCH_TIMEOUT_MS);
-    try {
-        const resp = await fetch(normalized, {
-            signal: controller.signal,
-            headers: {
-                "User-Agent": "OpenClawQQ/1.0",
-            },
-        });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-
-        const contentLength = Number(resp.headers.get("content-length") || "0");
-        if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-            throw new Error(`remote attachment too large: ${contentLength}`);
-        }
-
-        const buffer = Buffer.from(await resp.arrayBuffer());
-        if (buffer.byteLength > maxBytes) {
-            throw new Error(`remote attachment too large after download: ${buffer.byteLength}`);
-        }
-
-        await fs.writeFile(cachedPath, buffer);
-        return {
-            path: cachedPath,
-            mimeType: normalizeMimeTypeHint(resp.headers.get("content-type")) ?? mimeTypeHint,
-        };
-    } finally {
-        clearTimeout(timer);
-    }
+    await fs.writeFile(cachedPath, buffer);
+    return {
+      path: cachedPath,
+      mimeType: normalizeMimeTypeHint(resp.headers.get("content-type")) ?? mimeTypeHint,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-function rememberImageHint(
-    imageHints: string[],
-    imageHintMeta: Map<string, { fileName?: string; mimeType?: string }>,
-    hint: OneBotImageHint | undefined
-) {
-    const url = hint?.url?.trim();
-    if (!url) return;
-    if (!imageHints.includes(url)) imageHints.push(url);
-    const current = imageHintMeta.get(url) ?? {};
-    imageHintMeta.set(url, {
-        fileName: current.fileName || hint?.fileName,
-        mimeType: current.mimeType || hint?.mimeType,
-    });
+function rememberImageHint(imageHints: string[], imageHintMeta: Map<string, { fileName?: string; mimeType?: string }>, hint: OneBotImageHint | undefined) {
+  const url = hint?.url?.trim();
+  if (!url) return;
+  if (!imageHints.includes(url)) imageHints.push(url);
+  const current = imageHintMeta.get(url) ?? {};
+  imageHintMeta.set(url, {
+    fileName: current.fileName || hint?.fileName,
+    mimeType: current.mimeType || hint?.mimeType,
+  });
 }
 
 function extractImageHints(message: OneBotMessage | string | undefined, maxImages = 3): OneBotImageHint[] {
-    const hints: OneBotImageHint[] = [];
-    const seen = new Set<string>();
+  const hints: OneBotImageHint[] = [];
+  const seen = new Set<string>();
 
-    const pushHint = (hint: OneBotImageHint | undefined) => {
-        const url = hint?.url?.trim();
-        if (!url || seen.has(url)) return;
-        seen.add(url);
-        hints.push(hint!);
-    };
+  const pushHint = (hint: OneBotImageHint | undefined) => {
+    const url = hint?.url?.trim();
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    hints.push(hint!);
+  };
 
-    if (Array.isArray(message)) {
-        for (const segment of message) {
-            if (segment.type !== "image") continue;
-            const url = normalizeOneBotMediaUrlCandidate(segment.data?.url)
-                ?? normalizeOneBotMediaUrlCandidate(segment.data?.file);
-            if (!url) continue;
-            const fileName = typeof segment.data?.file === "string" ? guessFileName(segment.data.file) : undefined;
-            pushHint({
-                url,
-                fileName,
-                mimeType: inferImageMimeType(fileName) ?? inferImageMimeType(url),
-            });
-            if (hints.length >= maxImages) break;
-        }
-    } else if (typeof message === "string") {
-        const imageRegex = /\[CQ:image,([^\]]+)\]/g;
-        let match: RegExpExecArray | null;
-        while ((match = imageRegex.exec(message)) !== null) {
-            const rawAttrs = match[1] || "";
-            const urlMatch = rawAttrs.match(/(?:^|,)url=([^,\]]+)/);
-            const fileMatch = rawAttrs.match(/(?:^|,)file=([^,\]]+)/);
-            const url = normalizeOneBotMediaUrlCandidate(urlMatch?.[1])
-                ?? normalizeOneBotMediaUrlCandidate(fileMatch?.[1]);
-            if (!url) continue;
-            const fileNameRaw = fileMatch?.[1] ? guessFileName(fileMatch[1].replace(/&amp;/g, "&")) : undefined;
-            pushHint({
-                url,
-                fileName: fileNameRaw,
-                mimeType: inferImageMimeType(fileNameRaw) ?? inferImageMimeType(url),
-            });
-            if (hints.length >= maxImages) break;
-        }
+  if (Array.isArray(message)) {
+    for (const segment of message) {
+      if (segment.type !== "image") continue;
+      const url = normalizeOneBotMediaUrlCandidate(segment.data?.url) ?? normalizeOneBotMediaUrlCandidate(segment.data?.file);
+      if (!url) continue;
+      const fileName = typeof segment.data?.file === "string" ? guessFileName(segment.data.file) : undefined;
+      pushHint({
+        url,
+        fileName,
+        mimeType: inferImageMimeType(fileName) ?? inferImageMimeType(url),
+      });
+      if (hints.length >= maxImages) break;
     }
+  } else if (typeof message === "string") {
+    const imageRegex = /\[CQ:image,([^\]]+)\]/g;
+    let match: RegExpExecArray | null;
+    while ((match = imageRegex.exec(message)) !== null) {
+      const rawAttrs = match[1] || "";
+      const urlMatch = rawAttrs.match(/(?:^|,)url=([^,\]]+)/);
+      const fileMatch = rawAttrs.match(/(?:^|,)file=([^,\]]+)/);
+      const url = normalizeOneBotMediaUrlCandidate(urlMatch?.[1]) ?? normalizeOneBotMediaUrlCandidate(fileMatch?.[1]);
+      if (!url) continue;
+      const fileNameRaw = fileMatch?.[1] ? guessFileName(fileMatch[1].replace(/&amp;/g, "&")) : undefined;
+      pushHint({
+        url,
+        fileName: fileNameRaw,
+        mimeType: inferImageMimeType(fileNameRaw) ?? inferImageMimeType(url),
+      });
+      if (hints.length >= maxImages) break;
+    }
+  }
 
-    return hints;
+  return hints;
 }
 
-async function cacheOneBotImageLocally(
-    url: string,
-    meta?: { fileName?: string; mimeType?: string }
-): Promise<{ path: string; mimeType: string } | null> {
-    const normalized = normalizeOneBotMediaUrlCandidate(url);
-    if (!normalized) return null;
+async function cacheOneBotImageLocally(url: string, meta?: { fileName?: string; mimeType?: string }): Promise<{ path: string; mimeType: string } | null> {
+  const normalized = normalizeOneBotMediaUrlCandidate(url);
+  if (!normalized) return null;
 
-    const mimeTypeHint = normalizeMimeTypeHint(meta?.mimeType)
-        ?? inferImageMimeType(meta?.fileName)
-        ?? inferImageMimeType(normalized)
-        ?? DEFAULT_QQ_IMAGE_MIME;
-    const extHint = inferImageExtension(meta?.fileName)
-        ?? inferImageExtension(normalized)
-        ?? IMAGE_MIME_TO_EXT.get(mimeTypeHint)
-        ?? ".img";
-    const cacheKey = `${normalized}|${meta?.fileName || ""}|${mimeTypeHint}`;
-    const cachedPath = buildImageCachePath(cacheKey, extHint);
+  const mimeTypeHint = normalizeMimeTypeHint(meta?.mimeType) ?? inferImageMimeType(meta?.fileName) ?? inferImageMimeType(normalized) ?? DEFAULT_QQ_IMAGE_MIME;
+  const extHint = inferImageExtension(meta?.fileName) ?? inferImageExtension(normalized) ?? IMAGE_MIME_TO_EXT.get(mimeTypeHint) ?? ".img";
+  const cacheKey = `${normalized}|${meta?.fileName || ""}|${mimeTypeHint}`;
+  const cachedPath = buildImageCachePath(cacheKey, extHint);
 
-    try {
-        await fs.access(cachedPath, fsConstants.R_OK);
-        return { path: cachedPath, mimeType: mimeTypeHint };
-    } catch { }
+  try {
+    await fs.access(cachedPath, fsConstants.R_OK);
+    return { path: cachedPath, mimeType: mimeTypeHint };
+  } catch {}
 
-    await fs.mkdir(QQ_INBOUND_MEDIA_DIR, { recursive: true });
+  await fs.mkdir(QQ_INBOUND_MEDIA_DIR, { recursive: true });
 
-    const localPath = toLocalPathIfAny(normalized);
-    if (localPath) {
-        const stat = await fs.stat(localPath);
-        if (stat.size > QQ_INBOUND_MEDIA_MAX_BYTES) {
-            throw new Error(`local image too large: ${stat.size}`);
-        }
-        await fs.copyFile(localPath, cachedPath);
-        return {
-            path: cachedPath,
-            mimeType: inferImageMimeType(localPath) ?? mimeTypeHint,
-        };
+  const localPath = toLocalPathIfAny(normalized);
+  if (localPath) {
+    const stat = await fs.stat(localPath);
+    if (stat.size > QQ_INBOUND_MEDIA_MAX_BYTES) {
+      throw new Error(`local image too large: ${stat.size}`);
+    }
+    await fs.copyFile(localPath, cachedPath);
+    return {
+      path: cachedPath,
+      mimeType: inferImageMimeType(localPath) ?? mimeTypeHint,
+    };
+  }
+
+  if (/^base64:\/\//i.test(normalized)) {
+    const buffer = Buffer.from(normalized.slice("base64://".length), "base64");
+    if (buffer.byteLength > QQ_INBOUND_MEDIA_MAX_BYTES) {
+      throw new Error(`base64 image too large: ${buffer.byteLength}`);
+    }
+    await fs.writeFile(cachedPath, buffer);
+    return { path: cachedPath, mimeType: mimeTypeHint };
+  }
+
+  if (!/^https?:\/\//i.test(normalized)) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), QQ_INBOUND_MEDIA_FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetch(normalized, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "OpenClawQQ/1.0",
+      },
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+    const contentLength = Number(resp.headers.get("content-length") || "0");
+    if (Number.isFinite(contentLength) && contentLength > QQ_INBOUND_MEDIA_MAX_BYTES) {
+      throw new Error(`remote image too large: ${contentLength}`);
     }
 
-    if (/^base64:\/\//i.test(normalized)) {
-        const buffer = Buffer.from(normalized.slice("base64://".length), "base64");
-        if (buffer.byteLength > QQ_INBOUND_MEDIA_MAX_BYTES) {
-            throw new Error(`base64 image too large: ${buffer.byteLength}`);
-        }
-        await fs.writeFile(cachedPath, buffer);
-        return { path: cachedPath, mimeType: mimeTypeHint };
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    if (buffer.byteLength > QQ_INBOUND_MEDIA_MAX_BYTES) {
+      throw new Error(`remote image too large after download: ${buffer.byteLength}`);
     }
 
-    if (!/^https?:\/\//i.test(normalized)) return null;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), QQ_INBOUND_MEDIA_FETCH_TIMEOUT_MS);
-    try {
-        const resp = await fetch(normalized, {
-            signal: controller.signal,
-            headers: {
-                "User-Agent": "OpenClawQQ/1.0",
-            },
-        });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-
-        const contentLength = Number(resp.headers.get("content-length") || "0");
-        if (Number.isFinite(contentLength) && contentLength > QQ_INBOUND_MEDIA_MAX_BYTES) {
-            throw new Error(`remote image too large: ${contentLength}`);
-        }
-
-        const buffer = Buffer.from(await resp.arrayBuffer());
-        if (buffer.byteLength > QQ_INBOUND_MEDIA_MAX_BYTES) {
-            throw new Error(`remote image too large after download: ${buffer.byteLength}`);
-        }
-
-        await fs.writeFile(cachedPath, buffer);
-        return {
-            path: cachedPath,
-            mimeType: normalizeMimeTypeHint(resp.headers.get("content-type")) ?? mimeTypeHint,
-        };
-    } finally {
-        clearTimeout(timer);
-    }
+    await fs.writeFile(cachedPath, buffer);
+    return {
+      path: cachedPath,
+      mimeType: normalizeMimeTypeHint(resp.headers.get("content-type")) ?? mimeTypeHint,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function cacheImageHintsLocally(
-    imageUrls: string[],
-    imageHintMeta: Map<string, { fileName?: string; mimeType?: string }>
+  imageUrls: string[],
+  imageHintMeta: Map<string, { fileName?: string; mimeType?: string }>,
 ): Promise<{ entries: InboundMediaEntry[]; failures: Array<{ url: string; error: string }> }> {
-    const entries: InboundMediaEntry[] = [];
-    const failures: Array<{ url: string; error: string }> = [];
+  const entries: InboundMediaEntry[] = [];
+  const failures: Array<{ url: string; error: string }> = [];
 
-    for (const url of imageUrls) {
-        const normalizedUrl = normalizeOneBotMediaUrlCandidate(url);
-        if (!normalizedUrl) continue;
-        const meta = imageHintMeta.get(normalizedUrl);
-        const mimeTypeHint = normalizeMimeTypeHint(meta?.mimeType)
-            ?? inferImageMimeType(meta?.fileName)
-            ?? inferImageMimeType(normalizedUrl)
-            ?? DEFAULT_QQ_IMAGE_MIME;
-        try {
-            const cached = await cacheOneBotImageLocally(normalizedUrl, meta);
-            if (cached?.path) {
-                entries.push({
-                    url: normalizedUrl,
-                    path: cached.path,
-                    type: cached.mimeType || mimeTypeHint,
-                });
-                continue;
-            }
-        } catch (err) {
-            failures.push({ url: normalizedUrl, error: String(err) });
-        }
+  for (const url of imageUrls) {
+    const normalizedUrl = normalizeOneBotMediaUrlCandidate(url);
+    if (!normalizedUrl) continue;
+    const meta = imageHintMeta.get(normalizedUrl);
+    const mimeTypeHint = normalizeMimeTypeHint(meta?.mimeType) ?? inferImageMimeType(meta?.fileName) ?? inferImageMimeType(normalizedUrl) ?? DEFAULT_QQ_IMAGE_MIME;
+    try {
+      const cached = await cacheOneBotImageLocally(normalizedUrl, meta);
+      if (cached?.path) {
         entries.push({
-            url: normalizedUrl,
-            type: mimeTypeHint,
+          url: normalizedUrl,
+          path: cached.path,
+          type: cached.mimeType || mimeTypeHint,
         });
+        continue;
+      }
+    } catch (err) {
+      failures.push({ url: normalizedUrl, error: String(err) });
     }
+    entries.push({
+      url: normalizedUrl,
+      type: mimeTypeHint,
+    });
+  }
 
-    return { entries, failures };
+  return { entries, failures };
 }
 
 function collectInboundMediaEntriesFromCtx(ctx: any): InboundMediaEntry[] {
-    if (!ctx || typeof ctx !== "object") return [];
-    const urls = Array.isArray(ctx.MediaUrls)
-        ? ctx.MediaUrls
-        : typeof ctx.MediaUrl === "string" && ctx.MediaUrl.trim()
-            ? [ctx.MediaUrl]
-            : [];
-    const paths = Array.isArray(ctx.MediaPaths)
-        ? ctx.MediaPaths
-        : typeof ctx.MediaPath === "string" && ctx.MediaPath.trim()
-            ? [ctx.MediaPath]
-            : [];
-    const types = Array.isArray(ctx.MediaTypes)
-        ? ctx.MediaTypes
-        : typeof ctx.MediaType === "string" && ctx.MediaType.trim()
-            ? [ctx.MediaType]
-            : [];
+  if (!ctx || typeof ctx !== "object") return [];
+  const urls = Array.isArray(ctx.MediaUrls) ? ctx.MediaUrls : typeof ctx.MediaUrl === "string" && ctx.MediaUrl.trim() ? [ctx.MediaUrl] : [];
+  const paths = Array.isArray(ctx.MediaPaths) ? ctx.MediaPaths : typeof ctx.MediaPath === "string" && ctx.MediaPath.trim() ? [ctx.MediaPath] : [];
+  const types = Array.isArray(ctx.MediaTypes) ? ctx.MediaTypes : typeof ctx.MediaType === "string" && ctx.MediaType.trim() ? [ctx.MediaType] : [];
 
-    const count = Math.max(urls.length, paths.length);
-    const entries: InboundMediaEntry[] = [];
-    for (let i = 0; i < count; i += 1) {
-        const url = typeof urls[i] === "string" ? urls[i].trim() : "";
-        const pathValue = typeof paths[i] === "string" ? paths[i].trim() : "";
-        const type = typeof types[i] === "string" ? types[i].trim() : "";
-        if (!url && !pathValue) continue;
-        entries.push({
-            ...(url ? { url } : {}),
-            ...(pathValue ? { path: pathValue } : {}),
-            type: type || DEFAULT_QQ_IMAGE_MIME,
-        });
-    }
-    return entries;
+  const count = Math.max(urls.length, paths.length);
+  const entries: InboundMediaEntry[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const url = typeof urls[i] === "string" ? urls[i].trim() : "";
+    const pathValue = typeof paths[i] === "string" ? paths[i].trim() : "";
+    const type = typeof types[i] === "string" ? types[i].trim() : "";
+    if (!url && !pathValue) continue;
+    entries.push({
+      ...(url ? { url } : {}),
+      ...(pathValue ? { path: pathValue } : {}),
+      type: type || DEFAULT_QQ_IMAGE_MIME,
+    });
+  }
+  return entries;
 }
 
 function buildInboundMediaPayloadFromEntries(entries: InboundMediaEntry[]): Record<string, unknown> {
-    if (!entries.length) return {};
-    const unique: InboundMediaEntry[] = [];
-    const seen = new Set<string>();
-    for (const entry of entries) {
-        const url = entry.url?.trim();
-        const pathValue = entry.path?.trim();
-        if (!url && !pathValue) continue;
-        const key = `${pathValue || ""}|${url || ""}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        unique.push({
-            ...(url ? { url } : {}),
-            ...(pathValue ? { path: pathValue } : {}),
-            type: entry.type || DEFAULT_QQ_IMAGE_MIME,
-        });
-    }
-    if (!unique.length) return {};
+  if (!entries.length) return {};
+  const unique: InboundMediaEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const url = entry.url?.trim();
+    const pathValue = entry.path?.trim();
+    if (!url && !pathValue) continue;
+    const key = `${pathValue || ""}|${url || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push({
+      ...(url ? { url } : {}),
+      ...(pathValue ? { path: pathValue } : {}),
+      type: entry.type || DEFAULT_QQ_IMAGE_MIME,
+    });
+  }
+  if (!unique.length) return {};
 
-    const allHavePaths = unique.every((entry) => Boolean(entry.path));
-    const mediaUrls = unique.map((entry) => entry.url || entry.path || "").filter(Boolean);
-    const mediaTypes = unique.map((entry) => entry.type || DEFAULT_QQ_IMAGE_MIME);
-    if (allHavePaths) {
-        const mediaPaths = unique.map((entry) => entry.path!).filter(Boolean);
-        return {
-            MediaPath: mediaPaths[0],
-            MediaUrl: mediaUrls[0] || mediaPaths[0],
-            MediaType: mediaTypes[0],
-            MediaPaths: mediaPaths,
-            MediaUrls: mediaUrls.length === mediaPaths.length ? mediaUrls : mediaPaths,
-            MediaTypes: mediaTypes,
-        };
-    }
-
+  const allHavePaths = unique.every((entry) => Boolean(entry.path));
+  const mediaUrls = unique.map((entry) => entry.url || entry.path || "").filter(Boolean);
+  const mediaTypes = unique.map((entry) => entry.type || DEFAULT_QQ_IMAGE_MIME);
+  if (allHavePaths) {
+    const mediaPaths = unique.map((entry) => entry.path!).filter(Boolean);
     return {
-        MediaUrl: mediaUrls[0],
-        MediaType: mediaTypes[0],
-        MediaUrls: mediaUrls,
-        MediaTypes: mediaTypes,
+      MediaPath: mediaPaths[0],
+      MediaUrl: mediaUrls[0] || mediaPaths[0],
+      MediaType: mediaTypes[0],
+      MediaPaths: mediaPaths,
+      MediaUrls: mediaUrls.length === mediaPaths.length ? mediaUrls : mediaPaths,
+      MediaTypes: mediaTypes,
     };
+  }
+
+  return {
+    MediaUrl: mediaUrls[0],
+    MediaType: mediaTypes[0],
+    MediaUrls: mediaUrls,
+    MediaTypes: mediaTypes,
+  };
 }
 
 async function resolveOneBotImageUrl(client: OneBotClient, segment: any): Promise<string | undefined> {
-    if (!segment || String(segment?.type || "").toLowerCase() !== "image") return undefined;
+  if (!segment || String(segment?.type || "").toLowerCase() !== "image") return undefined;
 
-    const directUrl = normalizeOneBotMediaUrlCandidate(segment?.data?.url)
-        ?? normalizeOneBotMediaUrlCandidate(segment?.data?.file);
-    if (directUrl) {
-        if (!segment?.data?.url) segment.data.url = directUrl;
-        return directUrl;
+  const directUrl = normalizeOneBotMediaUrlCandidate(segment?.data?.url) ?? normalizeOneBotMediaUrlCandidate(segment?.data?.file);
+  if (directUrl) {
+    if (!segment?.data?.url) segment.data.url = directUrl;
+    return directUrl;
+  }
+
+  const fileRef = typeof segment?.data?.file === "string" ? segment.data.file.trim() : "";
+  if (!fileRef) return undefined;
+
+  try {
+    const info = await (client as any).sendWithResponse("get_image", { file: fileRef });
+    const resolved = normalizeOneBotMediaUrlCandidate(info?.url) ?? normalizeOneBotMediaUrlCandidate(info?.file);
+    if (resolved) {
+      segment.data.url = resolved;
+      return resolved;
     }
+  } catch (err) {
+    console.warn(`[QQ] Failed to resolve image URL via get_image: ${String(err)}`);
+  }
 
-    const fileRef = typeof segment?.data?.file === "string" ? segment.data.file.trim() : "";
-    if (!fileRef) return undefined;
+  return undefined;
+}
 
-    try {
-        const info = await (client as any).sendWithResponse("get_image", { file: fileRef });
+async function hydrateOneBotMessageMedia(client: OneBotClient, message: OneBotMessage | string | undefined, opts?: { groupId?: number }): Promise<void> {
+  if (!Array.isArray(message)) return;
+
+  for (const segment of message as any[]) {
+    const segType = String(segment?.type || "").toLowerCase();
+    if (segType === "image") {
+      await resolveOneBotImageUrl(client, segment);
+      continue;
+    }
+    if (segType === "file" && opts?.groupId !== undefined && !segment?.data?.url && segment?.data?.file_id) {
+      try {
+        const info = await (client as any).sendWithResponse("get_group_file_url", {
+          group_id: opts.groupId,
+          file_id: segment.data.file_id,
+          busid: segment.data.busid,
+        });
         const resolved = normalizeOneBotMediaUrlCandidate(info?.url) ?? normalizeOneBotMediaUrlCandidate(info?.file);
-        if (resolved) {
-            segment.data.url = resolved;
-            return resolved;
-        }
+        if (resolved) segment.data.url = resolved;
+      } catch {}
+    }
+  }
+}
+
+async function collectFileHintFromOneBotSegment(client: OneBotClient, segment: any, opts?: { groupId?: number }): Promise<QQInboundAttachmentHint | null> {
+  if (!segment || String(segment?.type || "").toLowerCase() !== "file") return null;
+
+  if (!segment.data?.url && opts?.groupId !== undefined && segment.data?.file_id) {
+    try {
+      const info = await (client as any).sendWithResponse("get_group_file_url", {
+        group_id: opts.groupId,
+        file_id: segment.data.file_id,
+        busid: segment.data.busid,
+      });
+      const resolved = normalizeOneBotMediaUrlCandidate(info?.url) ?? normalizeOneBotMediaUrlCandidate(info?.file);
+      if (resolved) segment.data.url = resolved;
+    } catch {}
+  }
+
+  const fileName = segment.data?.name || segment.data?.file || "未命名";
+  const fileId = segment.data?.file_id ? String(segment.data.file_id) : undefined;
+  const busid = segment.data?.busid !== undefined ? String(segment.data.busid) : undefined;
+  const fileUrl = typeof segment.data?.url === "string" ? segment.data.url : undefined;
+  const rawSize = segment.data?.file_size;
+  const parsedSize = typeof rawSize === "number" ? rawSize : typeof rawSize === "string" && /^\d+$/.test(rawSize) ? Number.parseInt(rawSize, 10) : undefined;
+  let mimeType = inferGenericMimeType(fileName) ?? DEFAULT_QQ_BINARY_MIME;
+  let localPath: string | undefined;
+  if (fileUrl) {
+    try {
+      const cached = await cacheInboundAttachmentLocally(fileUrl, { fileName, mimeType });
+      if (cached?.path) {
+        localPath = cached.path;
+        mimeType = cached.mimeType || mimeType;
+      }
     } catch (err) {
-        console.warn(`[QQ] Failed to resolve image URL via get_image: ${String(err)}`);
+      console.warn(`[QQ] Failed to cache inbound file: ${String(err)}`);
     }
+  }
 
-    return undefined;
-}
-
-async function hydrateOneBotMessageMedia(
-    client: OneBotClient,
-    message: OneBotMessage | string | undefined,
-    opts?: { groupId?: number }
-): Promise<void> {
-    if (!Array.isArray(message)) return;
-
-    for (const segment of message as any[]) {
-        const segType = String(segment?.type || "").toLowerCase();
-        if (segType === "image") {
-            await resolveOneBotImageUrl(client, segment);
-            continue;
-        }
-        if (segType === "file" && opts?.groupId !== undefined && !segment?.data?.url && segment?.data?.file_id) {
-            try {
-                const info = await (client as any).sendWithResponse("get_group_file_url", {
-                    group_id: opts.groupId,
-                    file_id: segment.data.file_id,
-                    busid: segment.data.busid,
-                });
-                const resolved = normalizeOneBotMediaUrlCandidate(info?.url) ?? normalizeOneBotMediaUrlCandidate(info?.file);
-                if (resolved) segment.data.url = resolved;
-            } catch { }
-        }
-    }
-}
-
-async function collectFileHintFromOneBotSegment(
-    client: OneBotClient,
-    segment: any,
-    opts?: { groupId?: number }
-): Promise<QQInboundAttachmentHint | null> {
-    if (!segment || String(segment?.type || "").toLowerCase() !== "file") return null;
-
-    if (!segment.data?.url && opts?.groupId !== undefined && segment.data?.file_id) {
-        try {
-            const info = await (client as any).sendWithResponse("get_group_file_url", {
-                group_id: opts.groupId,
-                file_id: segment.data.file_id,
-                busid: segment.data.busid,
-            });
-            const resolved = normalizeOneBotMediaUrlCandidate(info?.url) ?? normalizeOneBotMediaUrlCandidate(info?.file);
-            if (resolved) segment.data.url = resolved;
-        } catch { }
-    }
-
-    const fileName = segment.data?.name || segment.data?.file || "未命名";
-    const fileId = segment.data?.file_id ? String(segment.data.file_id) : undefined;
-    const busid = segment.data?.busid !== undefined ? String(segment.data.busid) : undefined;
-    const fileUrl = typeof segment.data?.url === "string" ? segment.data.url : undefined;
-    const rawSize = segment.data?.file_size;
-    const parsedSize = typeof rawSize === "number"
-        ? rawSize
-        : typeof rawSize === "string" && /^\d+$/.test(rawSize)
-            ? Number.parseInt(rawSize, 10)
-            : undefined;
-    let mimeType = inferGenericMimeType(fileName) ?? DEFAULT_QQ_BINARY_MIME;
-    let localPath: string | undefined;
-    if (fileUrl) {
-        try {
-            const cached = await cacheInboundAttachmentLocally(fileUrl, { fileName, mimeType });
-            if (cached?.path) {
-                localPath = cached.path;
-                mimeType = cached.mimeType || mimeType;
-            }
-        } catch (err) {
-            console.warn(`[QQ] Failed to cache inbound file: ${String(err)}`);
-        }
-    }
-
-    return {
-        kind: "file",
-        name: fileName,
-        ...(fileUrl ? { url: fileUrl } : {}),
-        ...(localPath ? { localPath } : {}),
-        ...(fileId ? { fileId } : {}),
-        ...(busid ? { busid } : {}),
-        ...(parsedSize !== undefined ? { size: parsedSize } : {}),
-        ...(mimeType ? { mimeType } : {}),
-    };
+  return {
+    kind: "file",
+    name: fileName,
+    ...(fileUrl ? { url: fileUrl } : {}),
+    ...(localPath ? { localPath } : {}),
+    ...(fileId ? { fileId } : {}),
+    ...(busid ? { busid } : {}),
+    ...(parsedSize !== undefined ? { size: parsedSize } : {}),
+    ...(mimeType ? { mimeType } : {}),
+  };
 }
 
 async function collectAudioHintFromOneBotSegment(segment: any): Promise<QQInboundAttachmentHint | null> {
-    if (!segment || String(segment?.type || "").toLowerCase() !== "record") return null;
+  if (!segment || String(segment?.type || "").toLowerCase() !== "record") return null;
 
-    const candidates = [
-        normalizeOneBotMediaUrlCandidate(segment.data?.url),
-        normalizeOneBotMediaUrlCandidate(segment.data?.file),
-        normalizeOneBotMediaUrlCandidate(segment.data?.path),
-    ].filter((value): value is string => Boolean(value));
-    const audioUrl = candidates.find((value) => /^https?:\/\//i.test(value) || /^base64:\/\//i.test(value) || (/^file:\/\//i.test(value) && !/^file:\/\/\/app\//i.test(value)));
-    const fileName = guessFileName(
-        typeof segment.data?.file === "string"
-            ? segment.data.file
-            : typeof segment.data?.path === "string"
-                ? segment.data.path
-                : audioUrl || "voice.amr"
-    );
-    const rawSize = segment.data?.file_size;
-    const parsedSize = typeof rawSize === "number"
-        ? rawSize
-        : typeof rawSize === "string" && /^\d+$/.test(rawSize)
-            ? Number.parseInt(rawSize, 10)
-            : undefined;
-    let mimeType = inferGenericMimeType(fileName) ?? "audio/amr";
-    let localPath: string | undefined;
-    if (audioUrl) {
-        try {
-            const cached = await cacheInboundAttachmentLocally(audioUrl, { fileName, mimeType });
-            if (cached?.path) {
-                localPath = cached.path;
-                mimeType = cached.mimeType || mimeType;
-            }
-        } catch (err) {
-            console.warn(`[QQ] Failed to cache inbound audio: ${String(err)}`);
-        }
+  const candidates = [normalizeOneBotMediaUrlCandidate(segment.data?.url), normalizeOneBotMediaUrlCandidate(segment.data?.file), normalizeOneBotMediaUrlCandidate(segment.data?.path)].filter(
+    (value): value is string => Boolean(value),
+  );
+  const audioUrl = candidates.find((value) => /^https?:\/\//i.test(value) || /^base64:\/\//i.test(value) || (/^file:\/\//i.test(value) && !/^file:\/\/\/app\//i.test(value)));
+  const fileName = guessFileName(typeof segment.data?.file === "string" ? segment.data.file : typeof segment.data?.path === "string" ? segment.data.path : audioUrl || "voice.amr");
+  const rawSize = segment.data?.file_size;
+  const parsedSize = typeof rawSize === "number" ? rawSize : typeof rawSize === "string" && /^\d+$/.test(rawSize) ? Number.parseInt(rawSize, 10) : undefined;
+  let mimeType = inferGenericMimeType(fileName) ?? "audio/amr";
+  let localPath: string | undefined;
+  if (audioUrl) {
+    try {
+      const cached = await cacheInboundAttachmentLocally(audioUrl, { fileName, mimeType });
+      if (cached?.path) {
+        localPath = cached.path;
+        mimeType = cached.mimeType || mimeType;
+      }
+    } catch (err) {
+      console.warn(`[QQ] Failed to cache inbound audio: ${String(err)}`);
     }
+  }
 
-    return {
-        kind: "audio",
-        name: fileName,
-        ...(audioUrl ? { url: audioUrl } : {}),
-        ...(localPath ? { localPath } : {}),
-        ...(parsedSize !== undefined ? { size: parsedSize } : {}),
-        ...(mimeType ? { mimeType } : {}),
-    };
+  return {
+    kind: "audio",
+    name: fileName,
+    ...(audioUrl ? { url: audioUrl } : {}),
+    ...(localPath ? { localPath } : {}),
+    ...(parsedSize !== undefined ? { size: parsedSize } : {}),
+    ...(mimeType ? { mimeType } : {}),
+  };
 }
 
 function extractImageUrls(message: OneBotMessage | string | undefined, maxImages = 3): string[] {
-    return extractImageHints(message, maxImages).map((hint) => hint.url);
+  return extractImageHints(message, maxImages).map((hint) => hint.url);
 }
 
 function cleanCQCodes(text: string | undefined): string {
-    if (!text) return "";
+  if (!text) return "";
 
-    let result = text;
-    const imageUrls: string[] = [];
+  let result = text;
+  const imageUrls: string[] = [];
 
-    // Match both url= and file= if they look like URLs
-    const imageRegex = /\[CQ:image,[^\]]*(?:url|file)=([^,\]]+)[^\]]*\]/g;
-    let match;
-    while ((match = imageRegex.exec(text)) !== null) {
-        const val = normalizeOneBotMediaUrlCandidate(match[1]);
-        if (val) {
-            imageUrls.push(val);
-        }
+  // Match both url= and file= if they look like URLs
+  const imageRegex = /\[CQ:image,[^\]]*(?:url|file)=([^,\]]+)[^\]]*\]/g;
+  let match;
+  while ((match = imageRegex.exec(text)) !== null) {
+    const val = normalizeOneBotMediaUrlCandidate(match[1]);
+    if (val) {
+      imageUrls.push(val);
     }
+  }
 
-    result = result.replace(/\[CQ:face,id=(\d+)\]/g, "[表情]");
+  result = result.replace(/\[CQ:face,id=(\d+)\]/g, "[表情]");
 
-    result = result.replace(/\[CQ:[^\]]+\]/g, (match) => {
-        if (match.startsWith("[CQ:image")) {
-            return "[图片]";
-        }
-        return "";
-    });
-
-    result = result.replace(/\s+/g, " ").trim();
-
-    if (imageUrls.length > 0) {
-        result = result ? `${result} [图片: ${imageUrls.join(", ")}]` : `[图片: ${imageUrls.join(", ")}]`;
+  result = result.replace(/\[CQ:[^\]]+\]/g, (match) => {
+    if (match.startsWith("[CQ:image")) {
+      return "[图片]";
     }
+    return "";
+  });
 
-    return result;
+  result = result.replace(/\s+/g, " ").trim();
+
+  if (imageUrls.length > 0) {
+    result = result ? `${result} [图片: ${imageUrls.join(", ")}]` : `[图片: ${imageUrls.join(", ")}]`;
+  }
+
+  return result;
 }
 
 function splitLongText(input: string, maxLength = 2800): string[] {
-    const text = (input || "").trim();
-    if (!text) return [];
-    if (text.length <= maxLength) return [text];
-    const chunks: string[] = [];
-    let rest = text;
-    while (rest.length > maxLength) {
-        let cut = rest.lastIndexOf("\n", maxLength);
-        if (cut < Math.floor(maxLength * 0.5)) cut = maxLength;
-        chunks.push(rest.slice(0, cut));
-        rest = rest.slice(cut).trimStart();
-    }
-    if (rest) chunks.push(rest);
-    return chunks;
+  const text = (input || "").trim();
+  if (!text) return [];
+  if (text.length <= maxLength) return [text];
+  const chunks: string[] = [];
+  let rest = text;
+  while (rest.length > maxLength) {
+    let cut = rest.lastIndexOf("\n", maxLength);
+    if (cut < Math.floor(maxLength * 0.5)) cut = maxLength;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
 }
 
 async function grokDrawDirect(prompt: string): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
-    const p = (prompt || "").trim();
-    if (!p) return { ok: false, error: "缺少提示词。用法: /grok_draw <提示词>" };
+  const p = (prompt || "").trim();
+  if (!p) return { ok: false, error: "缺少提示词。用法: /grok_draw <提示词>" };
 
-    const baseUrl = (process.env.GROK2API_BASE_URL || "http://127.0.0.1:18001/v1").replace(/\/+$/, "");
-    const apiKey = process.env.GROK2API_KEY || "grok2api";
+  const baseUrl = (process.env.GROK2API_BASE_URL || "http://127.0.0.1:18001/v1").replace(/\/+$/, "");
+  const apiKey = process.env.GROK2API_KEY || "grok2api";
 
-    try {
-        const resp = await fetch(`${baseUrl}/images/generations`, {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${apiKey}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                model: "grok-imagine-1.0",
-                prompt: p,
-                n: 1,
-                size: "1024x1024",
-            }),
-        });
+  try {
+    const resp = await fetch(`${baseUrl}/images/generations`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-imagine-1.0",
+        prompt: p,
+        n: 1,
+        size: "1024x1024",
+      }),
+    });
 
-        if (!resp.ok) {
-            const text = await resp.text().catch(() => "");
-            return { ok: false, error: `Grok API 错误: HTTP ${resp.status}${text ? ` | ${text.slice(0, 300)}` : ""}` };
-        }
-
-        const data = await resp.json().catch(() => null) as any;
-        const url = typeof data?.data?.[0]?.url === "string" ? data.data[0].url.trim() : "";
-        if (!url) return { ok: false, error: "Grok 返回中没有图片 URL" };
-        return { ok: true, url };
-    } catch (err) {
-        return { ok: false, error: `调用 Grok 失败: ${String(err)}` };
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return { ok: false, error: `Grok API 错误: HTTP ${resp.status}${text ? ` | ${text.slice(0, 300)}` : ""}` };
     }
+
+    const data = (await resp.json().catch(() => null)) as any;
+    const url = typeof data?.data?.[0]?.url === "string" ? data.data[0].url.trim() : "";
+    if (!url) return { ok: false, error: "Grok 返回中没有图片 URL" };
+    return { ok: true, url };
+  } catch (err) {
+    return { ok: false, error: `调用 Grok 失败: ${String(err)}` };
+  }
 }
 
 function buildQQReplyConfig(cfg: OpenClawConfig, config: QQConfig): OpenClawConfig {
-    const blockStreaming = config.blockStreaming ?? true;
-    const blockStreamingBreak = config.blockStreamingBreak ?? "message_end";
+  const blockStreaming = config.blockStreaming ?? true;
+  const blockStreamingBreak = config.blockStreamingBreak ?? "message_end";
 
-    return {
-        ...cfg,
-        agents: {
-            ...cfg.agents,
-            defaults: {
-                ...cfg.agents?.defaults,
-                blockStreamingDefault: blockStreaming ? "on" : "off",
-                blockStreamingBreak,
-            },
-        },
-        channels: {
-            ...cfg.channels,
-            qq: {
-                ...((cfg.channels?.qq as Record<string, unknown> | undefined) ?? {}),
-                blockStreaming,
-            },
-        },
-    };
+  return {
+    ...cfg,
+    agents: {
+      ...cfg.agents,
+      defaults: {
+        ...cfg.agents?.defaults,
+        blockStreamingDefault: blockStreaming ? "on" : "off",
+        blockStreamingBreak,
+      },
+    },
+    channels: {
+      ...cfg.channels,
+      qq: {
+        ...((cfg.channels?.qq as Record<string, unknown> | undefined) ?? {}),
+        blockStreaming,
+      },
+    },
+  };
 }
 
 function buildModelProbeUrls(rawBaseUrl: string): string[] {
-    const out: string[] = [];
-    const baseUrl = (rawBaseUrl || "").trim().replace(/\/+$/, "");
-    if (!baseUrl) return out;
-    out.push(`${baseUrl}/models`);
-    try {
-        const url = new URL(baseUrl);
-        const origin = url.origin;
-        const path = url.pathname.replace(/\/+$/, "");
-        out.push(`${origin}/v1/models`);
-        if (/\/codex\/v1$/i.test(path)) out.push(`${origin}${path.replace(/\/codex\/v1$/i, "/v1")}/models`);
-        if (/\/v1$/i.test(path)) out.push(`${origin}${path}/models`);
-    } catch { }
-    return [...new Set(out)];
+  const out: string[] = [];
+  const baseUrl = (rawBaseUrl || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) return out;
+  out.push(`${baseUrl}/models`);
+  try {
+    const url = new URL(baseUrl);
+    const origin = url.origin;
+    const path = url.pathname.replace(/\/+$/, "");
+    out.push(`${origin}/v1/models`);
+    if (/\/codex\/v1$/i.test(path)) out.push(`${origin}${path.replace(/\/codex\/v1$/i, "/v1")}/models`);
+    if (/\/v1$/i.test(path)) out.push(`${origin}${path}/models`);
+  } catch {}
+  return [...new Set(out)];
 }
 
 async function fetchProviderModelIdsDynamic(baseUrl: string, apiKey?: string): Promise<{ ids: string[]; source: string } | null> {
-    const probeUrls = buildModelProbeUrls(baseUrl);
-    for (const url of probeUrls) {
-        try {
-            const headers: Record<string, string> = {};
-            if (apiKey && apiKey.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
-            const resp = await fetch(url, { method: "GET", headers });
-            if (!resp.ok) continue;
-            const text = await resp.text();
-            const data = JSON.parse(text) as any;
-            const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-            const ids: string[] = arr
-                .map((item: any) => (typeof item?.id === "string" ? item.id.trim() : ""))
-                .filter((id: string) => Boolean(id));
-            if (ids.length > 0) {
-                const uniqueIds: string[] = [];
-                for (const id of ids) {
-                    if (!uniqueIds.includes(id)) uniqueIds.push(id);
-                }
-                return { ids: uniqueIds, source: url };
-            }
-        } catch { }
-    }
-    return null;
+  const probeUrls = buildModelProbeUrls(baseUrl);
+  for (const url of probeUrls) {
+    try {
+      const headers: Record<string, string> = {};
+      if (apiKey && apiKey.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
+      const resp = await fetch(url, { method: "GET", headers });
+      if (!resp.ok) continue;
+      const text = await resp.text();
+      const data = JSON.parse(text) as any;
+      const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      const ids: string[] = arr.map((item: any) => (typeof item?.id === "string" ? item.id.trim() : "")).filter((id: string) => Boolean(id));
+      if (ids.length > 0) {
+        const uniqueIds: string[] = [];
+        for (const id of ids) {
+          if (!uniqueIds.includes(id)) uniqueIds.push(id);
+        }
+        return { ids: uniqueIds, source: url };
+      }
+    } catch {}
+  }
+  return null;
 }
 
 async function buildModelCatalogText(enableDynamicLookup: boolean): Promise<string> {
-    const home = process.env.HOME || process.env.USERPROFILE || "";
-    const candidates = [
-        process.env.OPENCLAW_CONFIG,
-        process.env.OPENCLAW_CONFIG_PATH,
-        home ? path.join(home, ".openclaw", "openclaw.json") : "",
-    ].filter((value): value is string => Boolean(value && value.trim()));
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const candidates = [process.env.OPENCLAW_CONFIG, process.env.OPENCLAW_CONFIG_PATH, home ? path.join(home, ".openclaw", "openclaw.json") : ""].filter((value): value is string =>
+    Boolean(value && value.trim()),
+  );
 
-    let parsed: any = null;
-    let usedPath = "";
-    for (const cfgPath of candidates) {
-        try {
-            const raw = await fs.readFile(cfgPath, "utf-8");
-            parsed = JSON.parse(raw);
-            usedPath = cfgPath;
-            break;
-        } catch { }
-    }
+  let parsed: any = null;
+  let usedPath = "";
+  for (const cfgPath of candidates) {
+    try {
+      const raw = await fs.readFile(cfgPath, "utf-8");
+      parsed = JSON.parse(raw);
+      usedPath = cfgPath;
+      break;
+    } catch {}
+  }
 
-    if (!parsed) {
-        return "[OpenClawd QQ]\n无法读取模型配置文件。请在服务器执行：openclaw status";
-    }
+  if (!parsed) {
+    return "[OpenClawd QQ]\n无法读取模型配置文件。请在服务器执行：openclaw status";
+  }
 
-    const providers = parsed?.models?.providers as Record<string, any> | undefined;
-    const currentModel =
-        (typeof parsed?.agents?.defaults?.model?.primary === "string" && parsed.agents.defaults.model.primary.trim())
-        || (typeof parsed?.agent?.model === "string" && parsed.agent.model.trim())
-        || "unknown";
-    if (!providers || typeof providers !== "object") {
-        return `[OpenClawd QQ]\nCurrent: ${currentModel}\n未找到 models.providers 配置。`;
-    }
+  const providers = parsed?.models?.providers as Record<string, any> | undefined;
+  const currentModel =
+    (typeof parsed?.agents?.defaults?.model?.primary === "string" && parsed.agents.defaults.model.primary.trim()) ||
+    (typeof parsed?.agent?.model === "string" && parsed.agent.model.trim()) ||
+    "unknown";
+  if (!providers || typeof providers !== "object") {
+    return `[OpenClawd QQ]\nCurrent: ${currentModel}\n未找到 models.providers 配置。`;
+  }
 
-    const lines: string[] = [`[OpenClawd QQ]`, `Current: ${currentModel}`, `Providers:`];
-    let index = 1;
-    for (const [providerName, providerValue] of Object.entries(providers)) {
-        const cfgModels = Array.isArray((providerValue as any)?.models) ? (providerValue as any).models : [];
-        const cfgModelIds = cfgModels
-            .map((model: any) => (typeof model?.id === "string" ? model.id.trim() : ""))
-            .filter((id: string) => Boolean(id));
-        const baseUrl = typeof (providerValue as any)?.baseUrl === "string" ? (providerValue as any).baseUrl.trim() : "";
-        const apiKey = typeof (providerValue as any)?.apiKey === "string" ? (providerValue as any).apiKey : "";
-        const dynamic = enableDynamicLookup && baseUrl ? await fetchProviderModelIdsDynamic(baseUrl, apiKey) : null;
-        const modelIds = dynamic?.ids ?? cfgModelIds;
-        const source = dynamic ? `dynamic: ${dynamic.source}` : "config";
-        lines.push(`- ${providerName} (${modelIds.length}) [${source}]`);
-        for (const modelId of modelIds) {
-            lines.push(`  ${index}. ${providerName}/${modelId}`);
-            index += 1;
-        }
+  const lines: string[] = [`[OpenClawd QQ]`, `Current: ${currentModel}`, `Providers:`];
+  let index = 1;
+  for (const [providerName, providerValue] of Object.entries(providers)) {
+    const cfgModels = Array.isArray((providerValue as any)?.models) ? (providerValue as any).models : [];
+    const cfgModelIds = cfgModels.map((model: any) => (typeof model?.id === "string" ? model.id.trim() : "")).filter((id: string) => Boolean(id));
+    const baseUrl = typeof (providerValue as any)?.baseUrl === "string" ? (providerValue as any).baseUrl.trim() : "";
+    const apiKey = typeof (providerValue as any)?.apiKey === "string" ? (providerValue as any).apiKey : "";
+    const dynamic = enableDynamicLookup && baseUrl ? await fetchProviderModelIdsDynamic(baseUrl, apiKey) : null;
+    const modelIds = dynamic?.ids ?? cfgModelIds;
+    const source = dynamic ? `dynamic: ${dynamic.source}` : "config";
+    lines.push(`- ${providerName} (${modelIds.length}) [${source}]`);
+    for (const modelId of modelIds) {
+      lines.push(`  ${index}. ${providerName}/${modelId}`);
+      index += 1;
     }
-    lines.push(`Config: ${usedPath}`);
-    return lines.join("\n");
+  }
+  lines.push(`Config: ${usedPath}`);
+  return lines.join("\n");
 }
 
-
 function getReplyMessageId(message: OneBotMessage | string | undefined, rawMessage?: string, extra?: any): string | null {
-    if (message && typeof message !== "string") {
-        for (const segment of message as any[]) {
-            const segType = String(segment?.type || "").toLowerCase();
-            if (segType !== "reply") continue;
-            const idCandidate = segment?.data?.id ?? segment?.data?.message_id ?? segment?.data?.reply;
-            const id = typeof idCandidate === "number" ? String(idCandidate) : String(idCandidate || "").trim();
-            if (id && /^-?\d+$/.test(id)) return id;
-        }
+  if (message && typeof message !== "string") {
+    for (const segment of message as any[]) {
+      const segType = String(segment?.type || "").toLowerCase();
+      if (segType !== "reply") continue;
+      const idCandidate = segment?.data?.id ?? segment?.data?.message_id ?? segment?.data?.reply;
+      const id = typeof idCandidate === "number" ? String(idCandidate) : String(idCandidate || "").trim();
+      if (id && /^-?\d+$/.test(id)) return id;
     }
-    if (rawMessage) {
-        const match = rawMessage.match(/\[CQ:reply,id=(\d+)\]/);
-        if (match) return match[1];
-    }
-    const candidates = [
-        extra?.reply?.message_id,
-        extra?.reply?.id,
-        extra?.source?.message_id,
-        extra?.source?.id,
-        extra?.quoted_message_id,
-        extra?.quote_id,
-    ];
-    for (const c of candidates) {
-        const id = typeof c === "number" ? String(c) : (typeof c === "string" ? c.trim() : "");
-        if (id && /^-?\d+$/.test(id)) return id;
-    }
-    return null;
+  }
+  if (rawMessage) {
+    const match = rawMessage.match(/\[CQ:reply,id=(\d+)\]/);
+    if (match) return match[1];
+  }
+  const candidates = [extra?.reply?.message_id, extra?.reply?.id, extra?.source?.message_id, extra?.source?.id, extra?.quoted_message_id, extra?.quote_id];
+  for (const c of candidates) {
+    const id = typeof c === "number" ? String(c) : typeof c === "string" ? c.trim() : "";
+    if (id && /^-?\d+$/.test(id)) return id;
+  }
+  return null;
 }
 
 type LayerSegmentContext = {
-    text: string;
-    images: string[];
-    files: Array<{ name: string; url?: string; fileId?: string; busid?: string; size?: number }>;
+  text: string;
+  images: string[];
+  files: Array<{ name: string; url?: string; fileId?: string; busid?: string; size?: number }>;
 };
 
 function oneBotPayloadData(payload: any): any {
-    if (payload && typeof payload === "object" && payload.data && typeof payload.data === "object") return payload.data;
-    return payload;
+  if (payload && typeof payload === "object" && payload.data && typeof payload.data === "object") return payload.data;
+  return payload;
 }
 
 function extractMessageLikeFromPayload(payload: any): OneBotMessage | string | undefined {
-    const data = oneBotPayloadData(payload);
-    const candidates = [data?.message, data?.content, data?.raw_message, data?.rawMessage];
-    for (const c of candidates) {
-        if (Array.isArray(c) || typeof c === "string") return c as any;
-    }
-    return undefined;
+  const data = oneBotPayloadData(payload);
+  const candidates = [data?.message, data?.content, data?.raw_message, data?.rawMessage];
+  for (const c of candidates) {
+    if (Array.isArray(c) || typeof c === "string") return c as any;
+  }
+  return undefined;
 }
 
 function extractForwardNodeList(payload: any): any[] {
-    const data = oneBotPayloadData(payload);
-    const nodes = data?.messages ?? data?.message ?? data?.nodes ?? data?.nodeList;
-    return Array.isArray(nodes) ? nodes : [];
+  const data = oneBotPayloadData(payload);
+  const nodes = data?.messages ?? data?.message ?? data?.nodes ?? data?.nodeList;
+  return Array.isArray(nodes) ? nodes : [];
 }
 
 function truncateWithEllipsis(text: string, maxChars: number): string {
-    if (maxChars <= 0) return "";
-    if (text.length <= maxChars) return text;
-    return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
+  if (maxChars <= 0) return "";
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
 function collectForwardIdsFromMessage(message: OneBotMessage | string | undefined): string[] {
-    const ids: string[] = [];
-    if (Array.isArray(message)) {
-        for (const seg of message as any[]) {
-            const segType = String(seg?.type || "").toLowerCase();
-            if (!["forward", "forward_msg", "nodes"].includes(segType)) continue;
-            const fid = seg?.data?.id ?? seg?.data?.message_id ?? seg?.data?.forward_id;
-            if (fid !== undefined && fid !== null) ids.push(String(fid).trim());
-        }
-    } else if (typeof message === "string" && message) {
-        const patterns = [
-            /\[CQ:forward,id=([^,\]]+)\]/g,
-            /\[CQ:forward_msg,id=([^,\]]+)\]/g,
-            /\[CQ:forward,message_id=([^,\]]+)\]/g,
-            /\[CQ:nodes,id=([^,\]]+)\]/g,
-        ];
-        for (const re of patterns) {
-            let m: RegExpExecArray | null;
-            while ((m = re.exec(message)) !== null) {
-                if (m[1]) ids.push(String(m[1]).trim());
-            }
-        }
+  const ids: string[] = [];
+  if (Array.isArray(message)) {
+    for (const seg of message as any[]) {
+      const segType = String(seg?.type || "").toLowerCase();
+      if (!["forward", "forward_msg", "nodes"].includes(segType)) continue;
+      const fid = seg?.data?.id ?? seg?.data?.message_id ?? seg?.data?.forward_id;
+      if (fid !== undefined && fid !== null) ids.push(String(fid).trim());
     }
-    return ids.filter(Boolean);
+  } else if (typeof message === "string" && message) {
+    const patterns = [/\[CQ:forward,id=([^,\]]+)\]/g, /\[CQ:forward_msg,id=([^,\]]+)\]/g, /\[CQ:forward,message_id=([^,\]]+)\]/g, /\[CQ:nodes,id=([^,\]]+)\]/g];
+    for (const re of patterns) {
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(message)) !== null) {
+        if (m[1]) ids.push(String(m[1]).trim());
+      }
+    }
+  }
+  return ids.filter(Boolean);
 }
 
 function collectForwardIdsFromCandidates(...messages: Array<OneBotMessage | string | undefined>): string[] {
-    const unique = new Set<string>();
-    for (const message of messages) {
-        for (const id of collectForwardIdsFromMessage(message)) {
-            unique.add(id);
-        }
+  const unique = new Set<string>();
+  for (const message of messages) {
+    for (const id of collectForwardIdsFromMessage(message)) {
+      unique.add(id);
     }
-    return Array.from(unique);
+  }
+  return Array.from(unique);
 }
 
 function summarizeOneBotSegments(message: OneBotMessage | string | undefined, maxChars: number): LayerSegmentContext {
-    const images = extractImageUrls(message, 5);
-    const files: Array<{ name: string; url?: string; fileId?: string; busid?: string; size?: number }> = [];
-    let text = "";
-    if (typeof message === "string") {
-        text = cleanCQCodes(message);
-    } else if (Array.isArray(message)) {
-        for (const seg of message) {
-            if (seg.type === "text") text += seg.data?.text || "";
-            else if (seg.type === "at") text += ` @${seg.data?.qq || "unknown"} `;
-            else if (seg.type === "record") text += ` [语音${seg.data?.text ? `:${seg.data.text}` : ""}]`;
-            else if (seg.type === "image") text += " [图片]";
-            else if (seg.type === "video") text += " [视频]";
-            else if (seg.type === "json") text += " [卡片]";
-            else if (seg.type === "file") {
-                const fileName = seg.data?.name || seg.data?.file || "未命名";
-                text += ` [文件:${fileName}]`;
-                files.push({
-                    name: fileName,
-                    ...(typeof seg.data?.url === "string" ? { url: seg.data.url } : {}),
-                    ...(seg.data?.file_id ? { fileId: String(seg.data.file_id) } : {}),
-                    ...(seg.data?.busid !== undefined ? { busid: String(seg.data.busid) } : {}),
-                    ...(typeof seg.data?.file_size === "number" ? { size: seg.data.file_size } : {}),
-                });
-            } else if (seg.type === "forward" && seg.data?.id) {
-                text += ` [转发:${seg.data.id}]`;
-            } else if (seg.type === "reply" && seg.data?.id) {
-                text += ` [引用:${seg.data.id}]`;
-            }
-        }
-        text = cleanCQCodes(text);
+  const images = extractImageUrls(message, 5);
+  const files: Array<{ name: string; url?: string; fileId?: string; busid?: string; size?: number }> = [];
+  let text = "";
+  if (typeof message === "string") {
+    text = cleanCQCodes(message);
+  } else if (Array.isArray(message)) {
+    for (const seg of message) {
+      if (seg.type === "text") text += seg.data?.text || "";
+      else if (seg.type === "at") text += ` @${seg.data?.qq || "unknown"} `;
+      else if (seg.type === "record") text += ` [语音${seg.data?.text ? `:${seg.data.text}` : ""}]`;
+      else if (seg.type === "image") text += " [图片]";
+      else if (seg.type === "video") text += " [视频]";
+      else if (seg.type === "json") text += " [卡片]";
+      else if (seg.type === "file") {
+        const fileName = seg.data?.name || seg.data?.file || "未命名";
+        text += ` [文件:${fileName}]`;
+        files.push({
+          name: fileName,
+          ...(typeof seg.data?.url === "string" ? { url: seg.data.url } : {}),
+          ...(seg.data?.file_id ? { fileId: String(seg.data.file_id) } : {}),
+          ...(seg.data?.busid !== undefined ? { busid: String(seg.data.busid) } : {}),
+          ...(typeof seg.data?.file_size === "number" ? { size: seg.data.file_size } : {}),
+        });
+      } else if (seg.type === "forward" && seg.data?.id) {
+        text += ` [转发:${seg.data.id}]`;
+      } else if (seg.type === "reply" && seg.data?.id) {
+        text += ` [引用:${seg.data.id}]`;
+      }
     }
-    return { text: truncateWithEllipsis(text, maxChars), images, files };
+    text = cleanCQCodes(text);
+  }
+  return { text: truncateWithEllipsis(text, maxChars), images, files };
 }
 
-async function buildReplyForwardContextBlock(opts: {
-    client: OneBotClient;
-    rootEvent: any;
-    repliedMsg: any;
-    cfg: QQConfig;
-}): Promise<{ block: string; imageUrls: string[] }> {
-    const { client, rootEvent, repliedMsg, cfg } = opts;
-    if (!cfg.enrichReplyForwardContext) return { block: "", imageUrls: [] };
-    const debugLayerTrace = cfg.debugLayerTrace === true;
+async function buildReplyForwardContextBlock(opts: { client: OneBotClient; rootEvent: any; repliedMsg: any; cfg: QQConfig }): Promise<{ block: string; imageUrls: string[] }> {
+  const { client, rootEvent, repliedMsg, cfg } = opts;
+  if (!cfg.enrichReplyForwardContext) return { block: "", imageUrls: [] };
+  const debugLayerTrace = cfg.debugLayerTrace === true;
 
-    const maxReplyLayers = Math.max(0, Math.trunc(cfg.maxReplyLayers ?? 5));
-    const maxForwardLayers = Math.max(0, Math.trunc(cfg.maxForwardLayers ?? 5));
-    const maxForwardMessagesPerLayer = Math.max(1, Math.trunc(cfg.maxForwardMessagesPerLayer ?? 8));
-    const maxCharsPerLayer = Math.max(100, Math.trunc(cfg.maxCharsPerLayer ?? 900));
-    const maxTotalContextChars = Math.max(300, Math.trunc(cfg.maxTotalContextChars ?? 3000));
-    const includeSenderInLayers = cfg.includeSenderInLayers !== false;
-    const includeCurrentOutline = cfg.includeCurrentOutline !== false;
+  const maxReplyLayers = Math.max(0, Math.trunc(cfg.maxReplyLayers ?? 5));
+  const maxForwardLayers = Math.max(0, Math.trunc(cfg.maxForwardLayers ?? 5));
+  const maxForwardMessagesPerLayer = Math.max(1, Math.trunc(cfg.maxForwardMessagesPerLayer ?? 8));
+  const maxCharsPerLayer = Math.max(100, Math.trunc(cfg.maxCharsPerLayer ?? 900));
+  const maxTotalContextChars = Math.max(300, Math.trunc(cfg.maxTotalContextChars ?? 3000));
+  const includeSenderInLayers = cfg.includeSenderInLayers !== false;
+  const includeCurrentOutline = cfg.includeCurrentOutline !== false;
 
-    const lines: string[] = [];
-    const layeredImages = new Set<string>();
-    let usedChars = 0;
-    const pushLine = (line: string) => {
-        if (!line) return;
-        if (usedChars >= maxTotalContextChars) return;
-        const remaining = maxTotalContextChars - usedChars;
-        const safe = truncateWithEllipsis(line, remaining);
-        if (!safe) return;
-        lines.push(safe);
-        usedChars += safe.length + 1;
-    };
+  const lines: string[] = [];
+  const layeredImages = new Set<string>();
+  let usedChars = 0;
+  const pushLine = (line: string) => {
+    if (!line) return;
+    if (usedChars >= maxTotalContextChars) return;
+    const remaining = maxTotalContextChars - usedChars;
+    const safe = truncateWithEllipsis(line, remaining);
+    if (!safe) return;
+    lines.push(safe);
+    usedChars += safe.length + 1;
+  };
 
-    const seenForwardIds = new Set<string>();
-    const forwardQueue: Array<{ id: string; depth: number; layerTag: string }> = [];
-    const enqueueForwardId = (id: string | undefined | null, depth: number, layerTag: string) => {
-        const fid = String(id || "").trim();
-        if (!fid || seenForwardIds.has(fid) || depth > maxForwardLayers) return;
-        seenForwardIds.add(fid);
-        forwardQueue.push({ id: fid, depth, layerTag });
-    };
+  const seenForwardIds = new Set<string>();
+  const forwardQueue: Array<{ id: string; depth: number; layerTag: string }> = [];
+  const enqueueForwardId = (id: string | undefined | null, depth: number, layerTag: string) => {
+    const fid = String(id || "").trim();
+    if (!fid || seenForwardIds.has(fid) || depth > maxForwardLayers) return;
+    seenForwardIds.add(fid);
+    forwardQueue.push({ id: fid, depth, layerTag });
+  };
 
-    const collectAndEnqueueForwards = (
-        depth: number,
-        layerTag: string,
-        ...messages: Array<OneBotMessage | string | undefined>
-    ) => {
-        const fids = collectForwardIdsFromCandidates(...messages);
-        if (debugLayerTrace && fids.length > 0) {
-            console.log(`[QQLayerTrace] enqueue forward ids depth=${depth} tag=${layerTag} ids=${fids.join(",")}`);
-        }
-        for (const fid of fids) {
-            enqueueForwardId(fid, depth, layerTag);
-        }
-    };
-
-    if (includeCurrentOutline) {
-        await hydrateOneBotMessageMedia(client, rootEvent.message, { groupId: rootEvent?.group_id });
-        const current = summarizeOneBotSegments(rootEvent.message, maxCharsPerLayer);
-        for (const u of current.images) layeredImages.add(u);
-        pushLine(`[Layer 0][current] ${current.text || "(空文本)"}`);
-        collectAndEnqueueForwards(1, "forward", rootEvent.message, rootEvent.raw_message);
+  const collectAndEnqueueForwards = (depth: number, layerTag: string, ...messages: Array<OneBotMessage | string | undefined>) => {
+    const fids = collectForwardIdsFromCandidates(...messages);
+    if (debugLayerTrace && fids.length > 0) {
+      console.log(`[QQLayerTrace] enqueue forward ids depth=${depth} tag=${layerTag} ids=${fids.join(",")}`);
     }
+    for (const fid of fids) {
+      enqueueForwardId(fid, depth, layerTag);
+    }
+  };
 
-    const seenReplyIds = new Set<string>();
-    let cursor = repliedMsg;
-    for (let i = 1; i <= maxReplyLayers && cursor; i += 1) {
-        if (debugLayerTrace) {
-            const mlike = extractMessageLikeFromPayload(cursor);
-            const mtype = Array.isArray(mlike) ? "array" : typeof mlike;
-            console.log(`[QQLayerTrace] reply layer=${i} hasCursor=true messageLikeType=${mtype}`);
-        }
-        const senderName = cursor?.sender?.nickname || cursor?.sender?.card || cursor?.sender?.user_id || "unknown";
-        const msgBody = extractMessageLikeFromPayload(cursor) ?? (Array.isArray(cursor?.message) ? cursor.message : cursor?.raw_message);
-        await hydrateOneBotMessageMedia(client, msgBody, { groupId: cursor?.group_id ?? rootEvent?.group_id });
-        const summarized = summarizeOneBotSegments(msgBody, maxCharsPerLayer);
+  if (includeCurrentOutline) {
+    await hydrateOneBotMessageMedia(client, rootEvent.message, { groupId: rootEvent?.group_id });
+    const current = summarizeOneBotSegments(rootEvent.message, maxCharsPerLayer);
+    for (const u of current.images) layeredImages.add(u);
+    pushLine(`[Layer 0][current] ${current.text || "(空文本)"}`);
+    collectAndEnqueueForwards(1, "forward", rootEvent.message, rootEvent.raw_message);
+  }
+
+  const seenReplyIds = new Set<string>();
+  let cursor = repliedMsg;
+  for (let i = 1; i <= maxReplyLayers && cursor; i += 1) {
+    if (debugLayerTrace) {
+      const mlike = extractMessageLikeFromPayload(cursor);
+      const mtype = Array.isArray(mlike) ? "array" : typeof mlike;
+      console.log(`[QQLayerTrace] reply layer=${i} hasCursor=true messageLikeType=${mtype}`);
+    }
+    const senderName = cursor?.sender?.nickname || cursor?.sender?.card || cursor?.sender?.user_id || "unknown";
+    const msgBody = extractMessageLikeFromPayload(cursor) ?? (Array.isArray(cursor?.message) ? cursor.message : cursor?.raw_message);
+    await hydrateOneBotMessageMedia(client, msgBody, { groupId: cursor?.group_id ?? rootEvent?.group_id });
+    const summarized = summarizeOneBotSegments(msgBody, maxCharsPerLayer);
+    for (const u of summarized.images) layeredImages.add(u);
+    const prefix = includeSenderInLayers ? `[Layer ${i}][reply][from:${senderName}]` : `[Layer ${i}][reply]`;
+    pushLine(`${prefix} ${summarized.text || "(空文本)"}`);
+
+    collectAndEnqueueForwards(1, "forward-in-reply", msgBody, cursor?.raw_message, oneBotPayloadData(cursor)?.raw_message);
+
+    const nextReplyId = getReplyMessageId(extractMessageLikeFromPayload(cursor), cursor?.raw_message, oneBotPayloadData(cursor));
+    if (debugLayerTrace) console.log(`[QQLayerTrace] reply layer=${i} nextReplyId=${nextReplyId || ""}`);
+    if (!nextReplyId || seenReplyIds.has(nextReplyId)) break;
+    seenReplyIds.add(nextReplyId);
+    try {
+      cursor = await client.getMsg(nextReplyId);
+      if (debugLayerTrace) console.log(`[QQLayerTrace] get_msg ok id=${nextReplyId}`);
+    } catch (err) {
+      if (debugLayerTrace) console.warn(`[QQLayerTrace] get_msg failed id=${nextReplyId} err=${String(err)}`);
+      break;
+    }
+  }
+
+  while (forwardQueue.length > 0) {
+    const item = forwardQueue.shift()!;
+    if (item.depth > maxForwardLayers) continue;
+    if (debugLayerTrace) console.log(`[QQLayerTrace] dequeue forward id=${item.id} depth=${item.depth} tag=${item.layerTag}`);
+    try {
+      const forwardData = await client.getForwardMsg(item.id);
+      if (debugLayerTrace) console.log(`[QQLayerTrace] get_forward_msg ok id=${item.id}`);
+      const allNodes = extractForwardNodeList(forwardData);
+      if (debugLayerTrace) console.log(`[QQLayerTrace] forward id=${item.id} nodes=${allNodes.length}`);
+      const messages = allNodes.slice(0, maxForwardMessagesPerLayer);
+      let idx = 0;
+      for (const m of messages) {
+        idx += 1;
+        const senderName = m?.sender?.nickname || m?.sender?.card || m?.user_id || "unknown";
+        const content =
+          (Array.isArray(m?.message) ? m.message : undefined) ??
+          (Array.isArray(m?.content) ? m.content : undefined) ??
+          (typeof m?.raw_message === "string" ? m.raw_message : undefined) ??
+          (typeof m?.content === "string" ? m.content : "");
+        await hydrateOneBotMessageMedia(client, content, { groupId: m?.group_id ?? rootEvent?.group_id });
+        const summarized = summarizeOneBotSegments(content, maxCharsPerLayer);
         for (const u of summarized.images) layeredImages.add(u);
-        const prefix = includeSenderInLayers ? `[Layer ${i}][reply][from:${senderName}]` : `[Layer ${i}][reply]`;
+        const prefix = includeSenderInLayers ? `[Layer F${item.depth}.${idx}][${item.layerTag}][from:${senderName}]` : `[Layer F${item.depth}.${idx}][${item.layerTag}]`;
         pushLine(`${prefix} ${summarized.text || "(空文本)"}`);
 
-        collectAndEnqueueForwards(1, "forward-in-reply", msgBody, cursor?.raw_message, oneBotPayloadData(cursor)?.raw_message);
-
-        const nextReplyId = getReplyMessageId(extractMessageLikeFromPayload(cursor), cursor?.raw_message, oneBotPayloadData(cursor));
-        if (debugLayerTrace) console.log(`[QQLayerTrace] reply layer=${i} nextReplyId=${nextReplyId || ""}`);
-        if (!nextReplyId || seenReplyIds.has(nextReplyId)) break;
-        seenReplyIds.add(nextReplyId);
-        try {
-            cursor = await client.getMsg(nextReplyId);
-            if (debugLayerTrace) console.log(`[QQLayerTrace] get_msg ok id=${nextReplyId}`);
-        } catch (err) {
-            if (debugLayerTrace) console.warn(`[QQLayerTrace] get_msg failed id=${nextReplyId} err=${String(err)}`);
-            break;
+        // nested forward inside forward message
+        if (item.depth < maxForwardLayers) {
+          collectAndEnqueueForwards(item.depth + 1, "forward-nested", content as any, typeof m?.raw_message === "string" ? m.raw_message : undefined);
         }
-    }
 
-    while (forwardQueue.length > 0) {
-        const item = forwardQueue.shift()!;
-        if (item.depth > maxForwardLayers) continue;
-        if (debugLayerTrace) console.log(`[QQLayerTrace] dequeue forward id=${item.id} depth=${item.depth} tag=${item.layerTag}`);
-        try {
-            const forwardData = await client.getForwardMsg(item.id);
-            if (debugLayerTrace) console.log(`[QQLayerTrace] get_forward_msg ok id=${item.id}`);
-            const allNodes = extractForwardNodeList(forwardData);
-            if (debugLayerTrace) console.log(`[QQLayerTrace] forward id=${item.id} nodes=${allNodes.length}`);
-            const messages = allNodes.slice(0, maxForwardMessagesPerLayer);
-            let idx = 0;
-            for (const m of messages) {
-                idx += 1;
-                const senderName = m?.sender?.nickname || m?.sender?.card || m?.user_id || "unknown";
-                const content =
-                    (Array.isArray(m?.message) ? m.message : undefined)
-                    ?? (Array.isArray(m?.content) ? m.content : undefined)
-                    ?? (typeof m?.raw_message === "string" ? m.raw_message : undefined)
-                    ?? (typeof m?.content === "string" ? m.content : "");
-                await hydrateOneBotMessageMedia(client, content, { groupId: m?.group_id ?? rootEvent?.group_id });
-                const summarized = summarizeOneBotSegments(content, maxCharsPerLayer);
-                for (const u of summarized.images) layeredImages.add(u);
-                const prefix = includeSenderInLayers
-                    ? `[Layer F${item.depth}.${idx}][${item.layerTag}][from:${senderName}]`
-                    : `[Layer F${item.depth}.${idx}][${item.layerTag}]`;
-                pushLine(`${prefix} ${summarized.text || "(空文本)"}`);
-
-                // nested forward inside forward message
-                if (item.depth < maxForwardLayers) {
-                    collectAndEnqueueForwards(item.depth + 1, "forward-nested", content as any, typeof m?.raw_message === "string" ? m.raw_message : undefined);
-                }
-
-                // reply inside forward message
-                const replyIdInForward = getReplyMessageId(
-                    Array.isArray(m?.content) ? m.content : undefined,
-                    typeof m?.raw_message === "string" ? m.raw_message : undefined,
-                    m,
-                );
-                if (replyIdInForward && item.depth < maxForwardLayers) {
-                    try {
-                        const replied = await client.getMsg(replyIdInForward);
-                        const rSender = replied?.sender?.nickname || replied?.sender?.card || replied?.sender?.user_id || "unknown";
-                        const rBody = Array.isArray(replied?.message) ? replied.message : replied?.raw_message;
-                        await hydrateOneBotMessageMedia(client, rBody, { groupId: replied?.group_id ?? rootEvent?.group_id });
-                        const rSummarized = summarizeOneBotSegments(rBody, maxCharsPerLayer);
-                        for (const u of rSummarized.images) layeredImages.add(u);
-                        const rPrefix = includeSenderInLayers
-                            ? `[Layer RF${item.depth}.${idx}][reply-in-forward][from:${rSender}]`
-                            : `[Layer RF${item.depth}.${idx}][reply-in-forward]`;
-                        pushLine(`${rPrefix} ${rSummarized.text || "(空文本)"}`);
-                        collectAndEnqueueForwards(item.depth + 1, "forward-in-reply-in-forward", rBody, replied?.raw_message);
-                    } catch { }
-                }
-            }
-        } catch (err) {
-            if (debugLayerTrace) console.warn(`[QQLayerTrace] get_forward_msg failed id=${item.id} err=${String(err)}`);
-            continue;
+        // reply inside forward message
+        const replyIdInForward = getReplyMessageId(Array.isArray(m?.content) ? m.content : undefined, typeof m?.raw_message === "string" ? m.raw_message : undefined, m);
+        if (replyIdInForward && item.depth < maxForwardLayers) {
+          try {
+            const replied = await client.getMsg(replyIdInForward);
+            const rSender = replied?.sender?.nickname || replied?.sender?.card || replied?.sender?.user_id || "unknown";
+            const rBody = Array.isArray(replied?.message) ? replied.message : replied?.raw_message;
+            await hydrateOneBotMessageMedia(client, rBody, { groupId: replied?.group_id ?? rootEvent?.group_id });
+            const rSummarized = summarizeOneBotSegments(rBody, maxCharsPerLayer);
+            for (const u of rSummarized.images) layeredImages.add(u);
+            const rPrefix = includeSenderInLayers ? `[Layer RF${item.depth}.${idx}][reply-in-forward][from:${rSender}]` : `[Layer RF${item.depth}.${idx}][reply-in-forward]`;
+            pushLine(`${rPrefix} ${rSummarized.text || "(空文本)"}`);
+            collectAndEnqueueForwards(item.depth + 1, "forward-in-reply-in-forward", rBody, replied?.raw_message);
+          } catch {}
         }
+      }
+    } catch (err) {
+      if (debugLayerTrace) console.warn(`[QQLayerTrace] get_forward_msg failed id=${item.id} err=${String(err)}`);
+      continue;
     }
+  }
 
-    if (debugLayerTrace) console.log(`[QQLayerTrace] done lines=${lines.length} images=${layeredImages.size}`);
-    if (lines.length === 0) return { block: "", imageUrls: Array.from(layeredImages).slice(0, 5) };
-    return {
-        block: `<context_layers>\n${lines.join("\n")}\n</context_layers>\n\n`,
-        imageUrls: Array.from(layeredImages).slice(0, 5),
-    };
+  if (debugLayerTrace) console.log(`[QQLayerTrace] done lines=${lines.length} images=${layeredImages.size}`);
+  if (lines.length === 0) return { block: "", imageUrls: Array.from(layeredImages).slice(0, 5) };
+  return {
+    block: `<context_layers>\n${lines.join("\n")}\n</context_layers>\n\n`,
+    imageUrls: Array.from(layeredImages).slice(0, 5),
+  };
 }
 
 function normalizeTarget(raw: string): string {
-    const normalizedLegacy = normalizeQQDeliveryTarget(raw);
-    const { base, tmpSuffix } = splitTmpSuffix(normalizedLegacy.replace(/^(qq:)/i, "").trim());
-    if (!base) return base;
-    if (/^guild:[^:]+:[^:]+$/i.test(base)) return `${base}${tmpSuffix}`;
-    const groupMatch = base.match(/^group:(\d{5,12})$/i);
-    if (groupMatch) return `group:${groupMatch[1]}${tmpSuffix}`;
-    const userMatch = base.match(/^(?:user|u|dm|direct):(\d{5,12})$/i);
-    if (userMatch) return `user:${userMatch[1]}${tmpSuffix}`;
-    const plainId = base.match(/^(\d{5,12})$/);
-    if (plainId) return `user:${plainId[1]}${tmpSuffix}`;
-    return `${base}${tmpSuffix}`;
+  const normalizedLegacy = normalizeQQDeliveryTarget(raw);
+  const { base, tmpSuffix } = splitTmpSuffix(normalizedLegacy.replace(/^(qq:)/i, "").trim());
+  if (!base) return base;
+  if (/^guild:[^:]+:[^:]+$/i.test(base)) return `${base}${tmpSuffix}`;
+  const groupMatch = base.match(/^group:(\d{5,12})$/i);
+  if (groupMatch) return `group:${groupMatch[1]}${tmpSuffix}`;
+  const userMatch = base.match(/^(?:user|u|dm|direct):(\d{5,12})$/i);
+  if (userMatch) return `user:${userMatch[1]}${tmpSuffix}`;
+  const plainId = base.match(/^(\d{5,12})$/);
+  if (plainId) return `user:${plainId[1]}${tmpSuffix}`;
+  return `${base}${tmpSuffix}`;
 }
 
 async function resetSessionByKey(storePath: string, sessionKey: string): Promise<boolean> {
-    try {
-        const raw = await fs.readFile(storePath, "utf-8");
-        const store = JSON.parse(raw) as Record<string, unknown>;
-        if (!store || typeof store !== "object") return false;
-        if (!(sessionKey in store)) return false;
-        delete store[sessionKey];
-        await fs.writeFile(storePath, JSON.stringify(store, null, 2));
-        return true;
-    } catch {
-        return false;
-    }
+  try {
+    const raw = await fs.readFile(storePath, "utf-8");
+    const store = JSON.parse(raw) as Record<string, unknown>;
+    if (!store || typeof store !== "object") return false;
+    if (!(sessionKey in store)) return false;
+    delete store[sessionKey];
+    await fs.writeFile(storePath, JSON.stringify(store, null, 2));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const clients = new Map<string, OneBotClient>();
@@ -1392,105 +1294,97 @@ const groupBaseCards = new Map<string, string>();
 const groupBusySuffixes = new Map<string, string>();
 
 function normalizeNumericId(value: string | number | undefined | null): number | null {
-    if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
-    if (typeof value === "string") {
-        const trimmed = value.trim().replace(/^"|"$|^'|'$/g, "");
-        if (!/^\d+$/.test(trimmed)) return null;
-        const parsed = Number.parseInt(trimmed, 10);
-        return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
+  if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === "string") {
+    const trimmed = value.trim().replace(/^"|"$|^'|'$/g, "");
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number.parseInt(trimmed, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function normalizeNumericIdList(values: Array<string | number> | undefined): number[] {
-    if (!Array.isArray(values)) return [];
-    const out: number[] = [];
-    for (const value of values) {
-        const parsed = normalizeNumericId(value);
-        if (parsed !== null) out.push(parsed);
-    }
-    return out;
+  if (!Array.isArray(values)) return [];
+  const out: number[] = [];
+  for (const value of values) {
+    const parsed = normalizeNumericId(value);
+    if (parsed !== null) out.push(parsed);
+  }
+  return out;
 }
 
 function parseIdListInput(values: string | number | Array<string | number> | undefined): number[] {
-    if (typeof values === "number") {
-        const parsed = normalizeNumericId(values);
-        return parsed === null ? [] : [parsed];
-    }
-    if (typeof values === "string") {
-        const parts = values
-            .split(/[\n,，;；\s]+/)
-            .map((part) => part.trim())
-            .filter(Boolean);
-        return normalizeNumericIdList(parts);
-    }
-    return normalizeNumericIdList(values);
+  if (typeof values === "number") {
+    const parsed = normalizeNumericId(values);
+    return parsed === null ? [] : [parsed];
+  }
+  if (typeof values === "string") {
+    const parts = values
+      .split(/[\n,，;；\s]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    return normalizeNumericIdList(parts);
+  }
+  return normalizeNumericIdList(values);
 }
 
 function parseKeywordTriggersInput(values: string | string[] | undefined): string[] {
-    if (typeof values === "string") {
-        return values
-            .split(/[\n,，;；\s]+/)
-            .map((part) => part.trim())
-            .filter(Boolean);
-    }
-    if (Array.isArray(values)) {
-        return values
-            .map((part) => String(part).trim())
-            .filter(Boolean);
-    }
-    return [];
+  if (typeof values === "string") {
+    return values
+      .split(/[\n,，;；\s]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(values)) {
+    return values.map((part) => String(part).trim()).filter(Boolean);
+  }
+  return [];
 }
 
 function normalizeAccountLookupId(accountId: string | undefined | null): string {
-    const raw = typeof accountId === "string" ? accountId.trim() : "";
-    if (!raw) return DEFAULT_ACCOUNT_ID;
-    if (raw === DEFAULT_ACCOUNT_ID) return raw;
+  const raw = typeof accountId === "string" ? accountId.trim() : "";
+  if (!raw) return DEFAULT_ACCOUNT_ID;
+  if (raw === DEFAULT_ACCOUNT_ID) return raw;
 
-    const noPrefix = raw.replace(/^qq:/i, "");
-    if (noPrefix) return noPrefix;
-    return DEFAULT_ACCOUNT_ID;
+  const noPrefix = raw.replace(/^qq:/i, "");
+  if (noPrefix) return noPrefix;
+  return DEFAULT_ACCOUNT_ID;
 }
 
 function buildTaskKey(accountId: string, isGroup: boolean, isGuild: boolean, groupId?: number, guildId?: string, channelId?: string, userId?: number): string {
-    if (isGroup && groupId !== undefined && userId !== undefined) return `${accountId}:group:${groupId}:user:${userId}`;
-    if (isGuild && guildId && channelId && userId !== undefined) return `${accountId}:guild:${guildId}:${channelId}:user:${userId}`;
-    return `${accountId}:dm:${String(userId ?? "unknown")}`;
+  if (isGroup && groupId !== undefined && userId !== undefined) return `${accountId}:group:${groupId}:user:${userId}`;
+  if (isGuild && guildId && channelId && userId !== undefined) return `${accountId}:guild:${guildId}:${channelId}:user:${userId}`;
+  return `${accountId}:dm:${String(userId ?? "unknown")}`;
 }
 
 function stripTrailingBusySuffixes(card: string, busySuffix: string): string {
-    const normalized = (card || "").trim();
-    const suffix = (busySuffix || "输入中").trim();
-    if (!normalized || !suffix) return normalized;
+  const normalized = (card || "").trim();
+  const suffix = (busySuffix || "输入中").trim();
+  if (!normalized || !suffix) return normalized;
 
-    const marker = `(${suffix})`;
-    let result = normalized;
-    while (result.endsWith(marker)) {
-        result = result.slice(0, -marker.length).trimEnd();
-    }
-    return result.trim();
+  const marker = `(${suffix})`;
+  let result = normalized;
+  while (result.endsWith(marker)) {
+    result = result.slice(0, -marker.length).trimEnd();
+  }
+  return result.trim();
 }
 
 function countActiveTasksForAccount(accountId: string): number {
-    let count = 0;
-    const prefix = `${accountId}:`;
-    for (const taskId of activeTaskIds) {
-        if (taskId.startsWith(prefix)) count += 1;
-    }
-    return count;
+  let count = 0;
+  const prefix = `${accountId}:`;
+  for (const taskId of activeTaskIds) {
+    if (taskId.startsWith(prefix)) count += 1;
+  }
+  return count;
 }
 
-
-const TEMP_SESSION_STATE_FILE = path.join(
-    process.env.HOME || process.env.USERPROFILE || ".",
-    ".openclaw",
-    "workspace",
-    "qq-temp-sessions.json",
-);
+const TEMP_SESSION_STATE_FILE = path.join(process.env.HOME || process.env.USERPROFILE || ".", ".openclaw", "workspace", "qq-temp-sessions.json");
 
 type TempSessionState = {
-    active?: Record<string, string>;
-    history?: Record<string, string[]>;
+  active?: Record<string, string>;
+  history?: Record<string, string[]>;
 };
 
 const tempSessionSlots = new Map<string, string>();
@@ -1503,1563 +1397,1534 @@ const accountStartGeneration = new Map<string, number>();
 let globalProcessedMsgCleanupTimer: ReturnType<typeof setTimeout> | null = null;
 
 function ensureGlobalProcessedMsgCleanupTimer(): void {
-    if (globalProcessedMsgCleanupTimer) return;
-    globalProcessedMsgCleanupTimer = setInterval(() => {
-        if (globalProcessedMsgIds.size > 5000) {
-            globalProcessedMsgIds.clear();
-        }
-        const now = Date.now();
-        for (const [key, ts] of recentCommandFingerprints.entries()) {
-            if (now - ts > 10_000) {
-                recentCommandFingerprints.delete(key);
-            }
-        }
-    }, 3600000);
+  if (globalProcessedMsgCleanupTimer) return;
+  globalProcessedMsgCleanupTimer = setInterval(() => {
+    if (globalProcessedMsgIds.size > 5000) {
+      globalProcessedMsgIds.clear();
+    }
+    const now = Date.now();
+    for (const [key, ts] of recentCommandFingerprints.entries()) {
+      if (now - ts > 10_000) {
+        recentCommandFingerprints.delete(key);
+      }
+    }
+  }, 3600000);
 }
 
 function markAndCheckRecentCommandDuplicate(key: string, ttlMs = 2500): boolean {
-    const now = Date.now();
-    const lastTs = recentCommandFingerprints.get(key);
-    recentCommandFingerprints.set(key, now);
-    return typeof lastTs === "number" && now - lastTs <= ttlMs;
+  const now = Date.now();
+  const lastTs = recentCommandFingerprints.get(key);
+  recentCommandFingerprints.set(key, now);
+  return typeof lastTs === "number" && now - lastTs <= ttlMs;
 }
 
 function normalizeSlashVariants(input: string): string {
-    if (!input) return "";
-    return input.replace(/[／⁄∕]/g, "/");
+  if (!input) return "";
+  return input.replace(/[／⁄∕]/g, "/");
 }
 
 function escapeRegExp(text: string): string {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function extractLeadingInlineCommand(input: string, keywordTriggers: string[]): {
-    command: string;
-    keywordPrefixed: boolean;
-    bareCommand: boolean;
+function extractLeadingInlineCommand(
+  input: string,
+  keywordTriggers: string[],
+): {
+  command: string;
+  keywordPrefixed: boolean;
+  bareCommand: boolean;
 } {
-    const normalized = normalizeSlashVariants(input).trim();
-    if (!normalized) {
-        return { command: "", keywordPrefixed: false, bareCommand: false };
-    }
-    if (normalized.startsWith("/")) {
-        return { command: normalized, keywordPrefixed: false, bareCommand: true };
-    }
-
-    const sortedKeywords = [...keywordTriggers]
-        .map((item) => item.trim())
-        .filter(Boolean)
-        .sort((a, b) => b.length - a.length);
-    for (const keyword of sortedKeywords) {
-        const escapedKeyword = escapeRegExp(keyword);
-        const match = normalized.match(new RegExp(`^${escapedKeyword}(?:[\\s,，:：]+)?(\\/.*)$`));
-        if (!match) continue;
-        return {
-            command: match[1].trim(),
-            keywordPrefixed: true,
-            bareCommand: false,
-        };
-    }
-
+  const normalized = normalizeSlashVariants(input).trim();
+  if (!normalized) {
     return { command: "", keywordPrefixed: false, bareCommand: false };
+  }
+  if (normalized.startsWith("/")) {
+    return { command: normalized, keywordPrefixed: false, bareCommand: true };
+  }
+
+  const sortedKeywords = [...keywordTriggers]
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  for (const keyword of sortedKeywords) {
+    const escapedKeyword = escapeRegExp(keyword);
+    const match = normalized.match(new RegExp(`^${escapedKeyword}(?:[\\s,，:：]+)?(\\/.*)$`));
+    if (!match) continue;
+    return {
+      command: match[1].trim(),
+      keywordPrefixed: true,
+      bareCommand: false,
+    };
+  }
+
+  return { command: "", keywordPrefixed: false, bareCommand: false };
 }
 
 function buildTempThreadKey(accountId: string, isGroup: boolean, isGuild: boolean, groupId?: number, guildId?: string, channelId?: string, userId?: number): string {
-    if (isGroup && groupId !== undefined) return `${accountId}:group:${groupId}`;
-    if (isGuild && guildId && channelId) return `${accountId}:guild:${guildId}:${channelId}`;
-    return `${accountId}:dm:${String(userId ?? "unknown")}`;
+  if (isGroup && groupId !== undefined) return `${accountId}:group:${groupId}`;
+  if (isGuild && guildId && channelId) return `${accountId}:guild:${guildId}:${channelId}`;
+  return `${accountId}:dm:${String(userId ?? "unknown")}`;
 }
 
 function splitTmpSuffix(raw: string): { base: string; tmpSuffix: string } {
-    const value = String(raw || "").trim();
-    const idx = value.indexOf("::tmp:");
-    if (idx < 0) return { base: value, tmpSuffix: "" };
-    return {
-        base: value.slice(0, idx).trim(),
-        tmpSuffix: value.slice(idx),
-    };
+  const value = String(raw || "").trim();
+  const idx = value.indexOf("::tmp:");
+  if (idx < 0) return { base: value, tmpSuffix: "" };
+  return {
+    base: value.slice(0, idx).trim(),
+    tmpSuffix: value.slice(idx),
+  };
 }
 
 function normalizeLegacyQQPeerId(raw: string): string {
-    const { base, tmpSuffix } = splitTmpSuffix(raw);
-    const trimmed = base.trim();
-    if (!trimmed) return trimmed;
-    const withoutProvider = trimmed.replace(/^qq:/i, "");
-    const peerMatch = withoutProvider.match(/^(?:user|group):(\d{5,12})$/i);
-    if (peerMatch) return `${peerMatch[1]}${tmpSuffix}`;
-    return `${trimmed}${tmpSuffix}`;
+  const { base, tmpSuffix } = splitTmpSuffix(raw);
+  const trimmed = base.trim();
+  if (!trimmed) return trimmed;
+  const withoutProvider = trimmed.replace(/^qq:/i, "");
+  const peerMatch = withoutProvider.match(/^(?:user|group):(\d{5,12})$/i);
+  if (peerMatch) return `${peerMatch[1]}${tmpSuffix}`;
+  return `${trimmed}${tmpSuffix}`;
 }
 
 function normalizeQQSessionStoreKey(raw: string): string {
-    const trimmed = String(raw || "").trim();
-    if (!trimmed.toLowerCase().startsWith("agent:")) return trimmed;
-    const { base, tmpSuffix } = splitTmpSuffix(trimmed);
-    const parts = base.split(":");
-    if (parts.length < 5) return trimmed;
-    if (parts[0] !== "agent" || parts[2]?.toLowerCase() !== "qq") return trimmed;
+  const trimmed = String(raw || "").trim();
+  if (!trimmed.toLowerCase().startsWith("agent:")) return trimmed;
+  const { base, tmpSuffix } = splitTmpSuffix(trimmed);
+  const parts = base.split(":");
+  if (parts.length < 5) return trimmed;
+  if (parts[0] !== "agent" || parts[2]?.toLowerCase() !== "qq") return trimmed;
 
-    const kindIndex = parts.findIndex((part, idx) => idx >= 3 && /^(direct|group|channel)$/i.test(part));
-    if (kindIndex < 0 || kindIndex >= parts.length - 1) return trimmed;
+  const kindIndex = parts.findIndex((part, idx) => idx >= 3 && /^(direct|group|channel)$/i.test(part));
+  if (kindIndex < 0 || kindIndex >= parts.length - 1) return trimmed;
 
-    const normalizedPeer = normalizeLegacyQQPeerId(parts.slice(kindIndex + 1).join(":"));
-    const next = [...parts.slice(0, kindIndex + 1), normalizedPeer].join(":");
-    return `${next}${tmpSuffix}`;
+  const normalizedPeer = normalizeLegacyQQPeerId(parts.slice(kindIndex + 1).join(":"));
+  const next = [...parts.slice(0, kindIndex + 1), normalizedPeer].join(":");
+  return `${next}${tmpSuffix}`;
 }
 
 function normalizeQQDeliveryTarget(raw: string): string {
-    const trimmed = String(raw || "").trim();
-    if (!trimmed) return trimmed;
-    const { base, tmpSuffix } = splitTmpSuffix(trimmed);
-    const withoutProvider = base.replace(/^qq:/i, "");
-    const directMatch = withoutProvider.match(/^user:(\d{5,12})$/i);
-    if (directMatch) return `user:${directMatch[1]}${tmpSuffix}`;
-    const groupMatch = withoutProvider.match(/^group:(\d{5,12})$/i);
-    if (groupMatch) return `group:${groupMatch[1]}${tmpSuffix}`;
-    return `${withoutProvider}${tmpSuffix}`;
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return trimmed;
+  const { base, tmpSuffix } = splitTmpSuffix(trimmed);
+  const withoutProvider = base.replace(/^qq:/i, "");
+  const directMatch = withoutProvider.match(/^user:(\d{5,12})$/i);
+  if (directMatch) return `user:${directMatch[1]}${tmpSuffix}`;
+  const groupMatch = withoutProvider.match(/^group:(\d{5,12})$/i);
+  if (groupMatch) return `group:${groupMatch[1]}${tmpSuffix}`;
+  return `${withoutProvider}${tmpSuffix}`;
 }
 
 function inferQQSessionPeerKind(sessionKey: string): "direct" | "group" | "channel" | null {
-    const trimmed = String(sessionKey || "").trim();
-    if (!trimmed.toLowerCase().startsWith("agent:")) return null;
-    const { base } = splitTmpSuffix(trimmed);
-    const parts = base.split(":");
-    if (parts.length < 5) return null;
-    if (parts[0] !== "agent" || parts[2]?.toLowerCase() !== "qq") return null;
-    const kind = parts.find((part, idx) => idx >= 3 && /^(direct|group|channel)$/i.test(part));
-    if (!kind) return null;
-    return kind.toLowerCase() as "direct" | "group" | "channel";
+  const trimmed = String(sessionKey || "").trim();
+  if (!trimmed.toLowerCase().startsWith("agent:")) return null;
+  const { base } = splitTmpSuffix(trimmed);
+  const parts = base.split(":");
+  if (parts.length < 5) return null;
+  if (parts[0] !== "agent" || parts[2]?.toLowerCase() !== "qq") return null;
+  const kind = parts.find((part, idx) => idx >= 3 && /^(direct|group|channel)$/i.test(part));
+  if (!kind) return null;
+  return kind.toLowerCase() as "direct" | "group" | "channel";
 }
 
 function normalizeQQDeliveryTargetForSession(raw: string, sessionKey: string): string {
-    const normalized = normalizeQQDeliveryTarget(raw);
-    const { base, tmpSuffix } = splitTmpSuffix(normalized);
-    const plainId = base.match(/^(\d{5,12})$/);
-    if (!plainId) return normalized;
-    const kind = inferQQSessionPeerKind(sessionKey);
-    if (kind === "group") return `group:${plainId[1]}${tmpSuffix}`;
-    if (kind === "direct") return `user:${plainId[1]}${tmpSuffix}`;
-    return normalized;
+  const normalized = normalizeQQDeliveryTarget(raw);
+  const { base, tmpSuffix } = splitTmpSuffix(normalized);
+  const plainId = base.match(/^(\d{5,12})$/);
+  if (!plainId) return normalized;
+  const kind = inferQQSessionPeerKind(sessionKey);
+  if (kind === "group") return `group:${plainId[1]}${tmpSuffix}`;
+  if (kind === "direct") return `user:${plainId[1]}${tmpSuffix}`;
+  return normalized;
 }
 
 function pickPreferredSessionEntry(current: any, incoming: any): any {
-    if (!current) return incoming;
-    if (!incoming) return current;
-    const currentUpdatedAt = Number(current?.updatedAt ?? 0);
-    const incomingUpdatedAt = Number(incoming?.updatedAt ?? 0);
-    return incomingUpdatedAt >= currentUpdatedAt ? { ...current, ...incoming } : current;
+  if (!current) return incoming;
+  if (!incoming) return current;
+  const currentUpdatedAt = Number(current?.updatedAt ?? 0);
+  const incomingUpdatedAt = Number(incoming?.updatedAt ?? 0);
+  return incomingUpdatedAt >= currentUpdatedAt ? { ...current, ...incoming } : current;
 }
 
 function normalizeQQSessionStoreEntry(entry: any, sessionKey: string): any {
-    if (!entry || typeof entry !== "object") return entry;
-    const next = { ...entry } as Record<string, any>;
-    if (typeof next.lastTo === "string") next.lastTo = normalizeQQDeliveryTargetForSession(next.lastTo, sessionKey);
-    if (next.deliveryContext && typeof next.deliveryContext === "object") {
-        next.deliveryContext = { ...next.deliveryContext };
-        if (typeof next.deliveryContext.to === "string") {
-            next.deliveryContext.to = normalizeQQDeliveryTargetForSession(next.deliveryContext.to, sessionKey);
-        }
+  if (!entry || typeof entry !== "object") return entry;
+  const next = { ...entry } as Record<string, any>;
+  if (typeof next.lastTo === "string") next.lastTo = normalizeQQDeliveryTargetForSession(next.lastTo, sessionKey);
+  if (next.deliveryContext && typeof next.deliveryContext === "object") {
+    next.deliveryContext = { ...next.deliveryContext };
+    if (typeof next.deliveryContext.to === "string") {
+      next.deliveryContext.to = normalizeQQDeliveryTargetForSession(next.deliveryContext.to, sessionKey);
     }
-    return next;
+  }
+  return next;
 }
 
 async function migrateLegacyQQSessionStore(storePath: string): Promise<number> {
-    try {
-        const raw = await fs.readFile(storePath, "utf-8");
-        const parsed = JSON.parse(raw) as Record<string, any>;
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return 0;
+  try {
+    const raw = await fs.readFile(storePath, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, any>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return 0;
 
-        let changed = 0;
-        const nextStore: Record<string, any> = {};
-        for (const [key, value] of Object.entries(parsed)) {
-            const normalizedKey = normalizeQQSessionStoreKey(key);
-            const normalizedEntry = normalizeQQSessionStoreEntry(value, normalizedKey);
-            if (normalizedKey !== key) changed += 1;
-            if (JSON.stringify(normalizedEntry) !== JSON.stringify(value)) changed += 1;
-            nextStore[normalizedKey] = pickPreferredSessionEntry(nextStore[normalizedKey], normalizedEntry);
-        }
-
-        if (changed <= 0) return 0;
-
-        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-        await fs.copyFile(storePath, `${storePath}.bak.qq-session-normalize.${stamp}`);
-        await fs.writeFile(storePath, JSON.stringify(nextStore, null, 2), "utf-8");
-        return changed;
-    } catch (err) {
-        console.warn(`[QQ] Failed to migrate legacy session store ${storePath}: ${String(err)}`);
-        return 0;
+    let changed = 0;
+    const nextStore: Record<string, any> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const normalizedKey = normalizeQQSessionStoreKey(key);
+      const normalizedEntry = normalizeQQSessionStoreEntry(value, normalizedKey);
+      if (normalizedKey !== key) changed += 1;
+      if (JSON.stringify(normalizedEntry) !== JSON.stringify(value)) changed += 1;
+      nextStore[normalizedKey] = pickPreferredSessionEntry(nextStore[normalizedKey], normalizedEntry);
     }
+
+    if (changed <= 0) return 0;
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await fs.copyFile(storePath, `${storePath}.bak.qq-session-normalize.${stamp}`);
+    await fs.writeFile(storePath, JSON.stringify(nextStore, null, 2), "utf-8");
+    return changed;
+  } catch (err) {
+    console.warn(`[QQ] Failed to migrate legacy session store ${storePath}: ${String(err)}`);
+    return 0;
+  }
 }
 
 let legacyQQSessionMigrationPromise: Promise<void> | null = null;
 
 async function ensureLegacyQQSessionMigration(): Promise<void> {
-    if (legacyQQSessionMigrationPromise) {
-        await legacyQQSessionMigrationPromise;
-        return;
-    }
-    legacyQQSessionMigrationPromise = (async () => {
-        const home = process.env.HOME || process.env.USERPROFILE || "";
-        if (!home) return;
-        const agentsDir = path.join(home, ".openclaw", "agents");
-        let totalChanged = 0;
-        try {
-            const agents = await fs.readdir(agentsDir, { withFileTypes: true });
-            for (const agent of agents) {
-                if (!agent.isDirectory()) continue;
-                const storePath = path.join(agentsDir, agent.name, "sessions", "sessions.json");
-                try {
-                    await fs.access(storePath, fsConstants.F_OK | fsConstants.R_OK | fsConstants.W_OK);
-                } catch {
-                    continue;
-                }
-                totalChanged += await migrateLegacyQQSessionStore(storePath);
-            }
-        } catch (err) {
-            console.warn(`[QQ] Failed to scan legacy session stores: ${String(err)}`);
-            return;
-        }
-        if (totalChanged > 0) {
-            console.log(`[QQ] Normalized ${totalChanged} legacy QQ session key/update(s) in local session stores`);
-        }
-    })();
+  if (legacyQQSessionMigrationPromise) {
     await legacyQQSessionMigrationPromise;
+    return;
+  }
+  legacyQQSessionMigrationPromise = (async () => {
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    if (!home) return;
+    const agentsDir = path.join(home, ".openclaw", "agents");
+    let totalChanged = 0;
+    try {
+      const agents = await fs.readdir(agentsDir, { withFileTypes: true });
+      for (const agent of agents) {
+        if (!agent.isDirectory()) continue;
+        const storePath = path.join(agentsDir, agent.name, "sessions", "sessions.json");
+        try {
+          await fs.access(storePath, fsConstants.F_OK | fsConstants.R_OK | fsConstants.W_OK);
+        } catch {
+          continue;
+        }
+        totalChanged += await migrateLegacyQQSessionStore(storePath);
+      }
+    } catch (err) {
+      console.warn(`[QQ] Failed to scan legacy session stores: ${String(err)}`);
+      return;
+    }
+    if (totalChanged > 0) {
+      console.log(`[QQ] Normalized ${totalChanged} legacy QQ session key/update(s) in local session stores`);
+    }
+  })();
+  await legacyQQSessionMigrationPromise;
 }
 
 function sanitizeTempSlotName(input: string | undefined): string {
-    const raw = String(input || "").trim();
-    if (!raw) return "";
-    return raw
-        .replace(/\s+/g, "-")
-        .replace(/[^\p{L}\p{N}_-]+/gu, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        .slice(0, 48);
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+  return raw
+    .replace(/\s+/g, "-")
+    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
 }
 
 function formatSessionTimeCompact(inputMs?: number): string {
-    const dt = typeof inputMs === "number" && Number.isFinite(inputMs) ? new Date(inputMs) : new Date();
-    const value = Number.isFinite(dt.getTime()) ? dt : new Date();
-    const yyyy = String(value.getFullYear());
-    const mm = String(value.getMonth() + 1).padStart(2, "0");
-    const dd = String(value.getDate()).padStart(2, "0");
-    const hh = String(value.getHours()).padStart(2, "0");
-    const mi = String(value.getMinutes()).padStart(2, "0");
-    return `${yyyy}${mm}${dd}${hh}${mi}`;
+  const dt = typeof inputMs === "number" && Number.isFinite(inputMs) ? new Date(inputMs) : new Date();
+  const value = Number.isFinite(dt.getTime()) ? dt : new Date();
+  const yyyy = String(value.getFullYear());
+  const mm = String(value.getMonth() + 1).padStart(2, "0");
+  const dd = String(value.getDate()).padStart(2, "0");
+  const hh = String(value.getHours()).padStart(2, "0");
+  const mi = String(value.getMinutes()).padStart(2, "0");
+  return `${yyyy}${mm}${dd}${hh}${mi}`;
 }
 
 function sanitizeSessionTitle(input: string | undefined, fallback: string): string {
-    const raw = String(input || "").trim();
-    if (!raw) return fallback;
-    const compact = raw
-        .replace(/\s+/g, "-")
-        .replace(/[^\p{L}\p{N}_-]+/gu, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-+|-+$/g, "");
-    return (compact || fallback).slice(0, 80);
+  const raw = String(input || "").trim();
+  if (!raw) return fallback;
+  const compact = raw
+    .replace(/\s+/g, "-")
+    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return (compact || fallback).slice(0, 80);
 }
 
 function buildQQSessionLabel(params: {
-    isGroup: boolean;
-    isGuild: boolean;
-    groupId?: number;
-    guildId?: string;
-    channelId?: string;
-    userId: number;
-    activeTempSlot: string | null;
-    timestampMs?: number;
-    text?: string;
+  isGroup: boolean;
+  isGuild: boolean;
+  groupId?: number;
+  guildId?: string;
+  channelId?: string;
+  userId: number;
+  activeTempSlot: string | null;
+  timestampMs?: number;
+  text?: string;
 }): string {
-    const peer = params.isGroup
-        ? `g-${String(params.groupId ?? "unknown")}`
-        : params.isGuild
-            ? `guild-${String(params.guildId ?? "unknown")}-${String(params.channelId ?? "unknown")}`
-            : `u-${String(params.userId)}`;
-    const fallbackTitle = params.isGroup ? "group" : params.isGuild ? "channel" : "direct";
-    const baseTitle = params.activeTempSlot || String(params.text || "").trim().slice(0, 80);
-    const title = sanitizeSessionTitle(baseTitle, fallbackTitle);
-    return `qq:${peer}-${formatSessionTimeCompact(params.timestampMs)}-${title}`;
+  const peer = params.isGroup
+    ? `g-${String(params.groupId ?? "unknown")}`
+    : params.isGuild
+      ? `guild-${String(params.guildId ?? "unknown")}-${String(params.channelId ?? "unknown")}`
+      : `u-${String(params.userId)}`;
+  const fallbackTitle = params.isGroup ? "group" : params.isGuild ? "channel" : "direct";
+  const baseTitle =
+    params.activeTempSlot ||
+    String(params.text || "")
+      .trim()
+      .slice(0, 80);
+  const title = sanitizeSessionTitle(baseTitle, fallbackTitle);
+  return `qq:${peer}-${formatSessionTimeCompact(params.timestampMs)}-${title}`;
 }
 
 function buildEffectiveFromId(baseFromId: string, tempSlot: string | null): string {
-    if (!tempSlot) return baseFromId;
-    return `${baseFromId}::tmp:${tempSlot}`;
+  if (!tempSlot) return baseFromId;
+  return `${baseFromId}::tmp:${tempSlot}`;
 }
 
 type SessionCommandTarget = {
-    slot: string | null;
-    label: string;
+  slot: string | null;
+  label: string;
 };
 
 function listSessionCommandTargets(threadKey: string): SessionCommandTarget[] {
-    return [
-        { slot: null, label: "默认会话" },
-        ...getTempSessionHistory(threadKey).map((slot) => ({ slot, label: slot })),
-    ];
+  return [{ slot: null, label: "默认会话" }, ...getTempSessionHistory(threadKey).map((slot) => ({ slot, label: slot }))];
 }
 
 function resolveSessionCommandTargetByIndex(threadKey: string, index: number): SessionCommandTarget | null {
-    if (!Number.isInteger(index) || index < 1) return null;
-    return listSessionCommandTargets(threadKey)[index - 1] || null;
+  if (!Number.isInteger(index) || index < 1) return null;
+  return listSessionCommandTargets(threadKey)[index - 1] || null;
 }
 
 function renderSessionCommandTargetList(threadKey: string, activeTempSlot: string | null): string {
-    return listSessionCommandTargets(threadKey)
-        .map((target, idx) => {
-            const isCurrent = target.slot ? target.slot === activeTempSlot : !activeTempSlot;
-            return `${idx + 1}. ${target.label}${isCurrent ? " (当前)" : ""}`;
-        })
-        .join("\n");
+  return listSessionCommandTargets(threadKey)
+    .map((target, idx) => {
+      const isCurrent = target.slot ? target.slot === activeTempSlot : !activeTempSlot;
+      return `${idx + 1}. ${target.label}${isCurrent ? " (当前)" : ""}`;
+    })
+    .join("\n");
 }
 
 function getTempSessionHistory(threadKey: string): string[] {
-    return tempSessionHistory.get(threadKey) || [];
+  return tempSessionHistory.get(threadKey) || [];
 }
 
 function pushTempHistory(threadKey: string, slot: string): void {
-    const prev = tempSessionHistory.get(threadKey) || [];
-    const next = [slot, ...prev.filter((item) => item !== slot)];
-    tempSessionHistory.set(threadKey, next);
+  const prev = tempSessionHistory.get(threadKey) || [];
+  const next = [slot, ...prev.filter((item) => item !== slot)];
+  tempSessionHistory.set(threadKey, next);
 }
 
 async function ensureTempSessionSlotsLoaded(): Promise<void> {
-    if (tempSessionSlotsLoaded) return;
-    if (tempSessionSlotsLoading) {
-        await tempSessionSlotsLoading;
-        return;
-    }
-    tempSessionSlotsLoading = (async () => {
-        try {
-            const raw = await fs.readFile(TEMP_SESSION_STATE_FILE, "utf-8");
-            const parsed = JSON.parse(raw) as TempSessionState | Record<string, string>;
-
-            if (parsed && typeof parsed === "object" && "active" in parsed) {
-                const state = parsed as TempSessionState;
-                if (state.active && typeof state.active === "object") {
-                    for (const [key, value] of Object.entries(state.active)) {
-                        const slot = sanitizeTempSlotName(value);
-                        if (slot) tempSessionSlots.set(key, slot);
-                    }
-                }
-                if (state.history && typeof state.history === "object") {
-                    for (const [key, values] of Object.entries(state.history)) {
-                        if (!Array.isArray(values)) continue;
-                        const cleaned = values
-                            .map((value) => sanitizeTempSlotName(String(value)))
-                            .filter(Boolean);
-                        if (cleaned.length > 0) tempSessionHistory.set(key, cleaned);
-                    }
-                }
-            } else if (parsed && typeof parsed === "object") {
-                for (const [key, value] of Object.entries(parsed)) {
-                    const slot = sanitizeTempSlotName(String(value));
-                    if (slot) {
-                        tempSessionSlots.set(key, slot);
-                        pushTempHistory(key, slot);
-                    }
-                }
-            }
-        } catch { }
-        tempSessionSlotsLoaded = true;
-    })();
+  if (tempSessionSlotsLoaded) return;
+  if (tempSessionSlotsLoading) {
     await tempSessionSlotsLoading;
-    tempSessionSlotsLoading = null;
+    return;
+  }
+  tempSessionSlotsLoading = (async () => {
+    try {
+      const raw = await fs.readFile(TEMP_SESSION_STATE_FILE, "utf-8");
+      const parsed = JSON.parse(raw) as TempSessionState | Record<string, string>;
+
+      if (parsed && typeof parsed === "object" && "active" in parsed) {
+        const state = parsed as TempSessionState;
+        if (state.active && typeof state.active === "object") {
+          for (const [key, value] of Object.entries(state.active)) {
+            const slot = sanitizeTempSlotName(value);
+            if (slot) tempSessionSlots.set(key, slot);
+          }
+        }
+        if (state.history && typeof state.history === "object") {
+          for (const [key, values] of Object.entries(state.history)) {
+            if (!Array.isArray(values)) continue;
+            const cleaned = values.map((value) => sanitizeTempSlotName(String(value))).filter(Boolean);
+            if (cleaned.length > 0) tempSessionHistory.set(key, cleaned);
+          }
+        }
+      } else if (parsed && typeof parsed === "object") {
+        for (const [key, value] of Object.entries(parsed)) {
+          const slot = sanitizeTempSlotName(String(value));
+          if (slot) {
+            tempSessionSlots.set(key, slot);
+            pushTempHistory(key, slot);
+          }
+        }
+      }
+    } catch {}
+    tempSessionSlotsLoaded = true;
+  })();
+  await tempSessionSlotsLoading;
+  tempSessionSlotsLoading = null;
 }
 
 async function reloadTempSessionStateFromDisk(): Promise<void> {
-    try {
-        const raw = await fs.readFile(TEMP_SESSION_STATE_FILE, "utf-8");
-        const parsed = JSON.parse(raw) as TempSessionState | Record<string, string>;
-        const nextSlots = new Map<string, string>();
-        const nextHistory = new Map<string, string[]>();
+  try {
+    const raw = await fs.readFile(TEMP_SESSION_STATE_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as TempSessionState | Record<string, string>;
+    const nextSlots = new Map<string, string>();
+    const nextHistory = new Map<string, string[]>();
 
-        if (parsed && typeof parsed === "object" && "active" in parsed) {
-            const state = parsed as TempSessionState;
-            if (state.active && typeof state.active === "object") {
-                for (const [key, value] of Object.entries(state.active)) {
-                    const slot = sanitizeTempSlotName(value);
-                    if (slot) nextSlots.set(key, slot);
-                }
-            }
-            if (state.history && typeof state.history === "object") {
-                for (const [key, values] of Object.entries(state.history)) {
-                    if (!Array.isArray(values)) continue;
-                    const cleaned = values
-                        .map((value) => sanitizeTempSlotName(String(value)))
-                        .filter(Boolean);
-                    if (cleaned.length > 0) nextHistory.set(key, cleaned);
-                }
-            }
-        } else if (parsed && typeof parsed === "object") {
-            for (const [key, value] of Object.entries(parsed)) {
-                const slot = sanitizeTempSlotName(String(value));
-                if (!slot) continue;
-                nextSlots.set(key, slot);
-                nextHistory.set(key, [slot]);
-            }
-        } else {
-            return;
+    if (parsed && typeof parsed === "object" && "active" in parsed) {
+      const state = parsed as TempSessionState;
+      if (state.active && typeof state.active === "object") {
+        for (const [key, value] of Object.entries(state.active)) {
+          const slot = sanitizeTempSlotName(value);
+          if (slot) nextSlots.set(key, slot);
         }
-
-        tempSessionSlots.clear();
-        tempSessionHistory.clear();
-        for (const [key, value] of nextSlots.entries()) tempSessionSlots.set(key, value);
-        for (const [key, values] of nextHistory.entries()) tempSessionHistory.set(key, values);
-        tempSessionSlotsLoaded = true;
-    } catch (err) {
-        console.warn(`[QQ] Failed to reload temp session state from disk: ${String(err)}`);
+      }
+      if (state.history && typeof state.history === "object") {
+        for (const [key, values] of Object.entries(state.history)) {
+          if (!Array.isArray(values)) continue;
+          const cleaned = values.map((value) => sanitizeTempSlotName(String(value))).filter(Boolean);
+          if (cleaned.length > 0) nextHistory.set(key, cleaned);
+        }
+      }
+    } else if (parsed && typeof parsed === "object") {
+      for (const [key, value] of Object.entries(parsed)) {
+        const slot = sanitizeTempSlotName(String(value));
+        if (!slot) continue;
+        nextSlots.set(key, slot);
+        nextHistory.set(key, [slot]);
+      }
+    } else {
+      return;
     }
+
+    tempSessionSlots.clear();
+    tempSessionHistory.clear();
+    for (const [key, value] of nextSlots.entries()) tempSessionSlots.set(key, value);
+    for (const [key, values] of nextHistory.entries()) tempSessionHistory.set(key, values);
+    tempSessionSlotsLoaded = true;
+  } catch (err) {
+    console.warn(`[QQ] Failed to reload temp session state from disk: ${String(err)}`);
+  }
 }
 
 async function persistTempSessionSlots(): Promise<void> {
-    try {
-        await fs.mkdir(path.dirname(TEMP_SESSION_STATE_FILE), { recursive: true });
-        const active: Record<string, string> = {};
-        for (const [key, value] of tempSessionSlots.entries()) {
-            active[key] = value;
-        }
-        const history: Record<string, string[]> = {};
-        for (const [key, values] of tempSessionHistory.entries()) {
-            if (values.length > 0) history[key] = values;
-        }
-        const state: TempSessionState = { active, history };
-        await fs.writeFile(TEMP_SESSION_STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
-    } catch (err) {
-        console.warn(`[QQ] Failed to persist temp session slots: ${String(err)}`);
+  try {
+    await fs.mkdir(path.dirname(TEMP_SESSION_STATE_FILE), { recursive: true });
+    const active: Record<string, string> = {};
+    for (const [key, value] of tempSessionSlots.entries()) {
+      active[key] = value;
     }
+    const history: Record<string, string[]> = {};
+    for (const [key, values] of tempSessionHistory.entries()) {
+      if (values.length > 0) history[key] = values;
+    }
+    const state: TempSessionState = { active, history };
+    await fs.writeFile(TEMP_SESSION_STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+  } catch (err) {
+    console.warn(`[QQ] Failed to persist temp session slots: ${String(err)}`);
+  }
 }
 
 function getTempSessionSlot(threadKey: string): string | null {
-    const slot = tempSessionSlots.get(threadKey);
-    return slot || null;
+  const slot = tempSessionSlots.get(threadKey);
+  return slot || null;
 }
 
 async function setTempSessionSlot(threadKey: string, slot: string | null): Promise<void> {
-    if (slot) {
-        tempSessionSlots.set(threadKey, slot);
-        pushTempHistory(threadKey, slot);
-    } else {
-        tempSessionSlots.delete(threadKey);
-    }
-    await persistTempSessionSlots();
+  if (slot) {
+    tempSessionSlots.set(threadKey, slot);
+    pushTempHistory(threadKey, slot);
+  } else {
+    tempSessionSlots.delete(threadKey);
+  }
+  await persistTempSessionSlots();
 }
 
 async function setGroupTypingCard(client: OneBotClient, accountId: string, groupId: number, busySuffix: string): Promise<void> {
-    const selfId = client.getSelfId();
-    if (!selfId) return;
-    const groupKey = `${accountId}:group:${groupId}`;
-    const suffix = (busySuffix || "输入中").trim() || "输入中";
-    const current = groupBusyCounters.get(groupKey) || 0;
-    const next = current + 1;
-    groupBusyCounters.set(groupKey, next);
-    groupBusySuffixes.set(groupKey, suffix);
+  const selfId = client.getSelfId();
+  if (!selfId) return;
+  const groupKey = `${accountId}:group:${groupId}`;
+  const suffix = (busySuffix || "输入中").trim() || "输入中";
+  const current = groupBusyCounters.get(groupKey) || 0;
+  const next = current + 1;
+  groupBusyCounters.set(groupKey, next);
+  groupBusySuffixes.set(groupKey, suffix);
 
-    if (current > 0) return;
+  if (current > 0) return;
 
-    try {
-        const info = await (client as any).sendWithResponse("get_group_member_info", { group_id: groupId, user_id: selfId, no_cache: true });
-        const currentCard = (info?.card || info?.nickname || "").trim();
-        const baseCard = stripTrailingBusySuffixes(currentCard, suffix);
-        groupBaseCards.set(groupKey, baseCard);
-        const nextCard = baseCard ? `${baseCard}(${suffix})` : `(${suffix})`;
-        client.setGroupCard(groupId, selfId, nextCard);
-    } catch (err) {
-        console.warn(`[QQ] Failed to set busy group card: ${String(err)}`);
-    }
+  try {
+    const info = await (client as any).sendWithResponse("get_group_member_info", { group_id: groupId, user_id: selfId, no_cache: true });
+    const currentCard = (info?.card || info?.nickname || "").trim();
+    const baseCard = stripTrailingBusySuffixes(currentCard, suffix);
+    groupBaseCards.set(groupKey, baseCard);
+    const nextCard = baseCard ? `${baseCard}(${suffix})` : `(${suffix})`;
+    client.setGroupCard(groupId, selfId, nextCard);
+  } catch (err) {
+    console.warn(`[QQ] Failed to set busy group card: ${String(err)}`);
+  }
 }
 
 async function activateGroupTypingIndicator(client: OneBotClient, accountId: string, groupId: number, busySuffix: string): Promise<boolean> {
-    const selfId = client.getSelfId();
-    if (selfId) {
-        try {
-            const activated = await client.setInputStatus(groupId, selfId);
-            if (activated) return false;
-        } catch (err) {
-            console.warn(`[QQ] Native typing indicator unavailable, falling back to group card: ${String(err)}`);
-        }
+  const selfId = client.getSelfId();
+  if (selfId) {
+    try {
+      const activated = await client.setInputStatus(groupId, selfId);
+      if (activated) return false;
+    } catch (err) {
+      console.warn(`[QQ] Native typing indicator unavailable, falling back to group card: ${String(err)}`);
     }
+  }
 
-    await setGroupTypingCard(client, accountId, groupId, busySuffix);
-    return true;
+  await setGroupTypingCard(client, accountId, groupId, busySuffix);
+  return true;
 }
 
 function clearGroupTypingCard(client: OneBotClient, accountId: string, groupId: number, busySuffix?: string): void {
-    const selfId = client.getSelfId();
-    if (!selfId) return;
-    const groupKey = `${accountId}:group:${groupId}`;
-    const current = groupBusyCounters.get(groupKey) || 0;
-    if (current <= 1) {
-        groupBusyCounters.delete(groupKey);
-        const suffix = (groupBusySuffixes.get(groupKey) || busySuffix || "输入中").trim() || "输入中";
-        const baseCard = stripTrailingBusySuffixes(groupBaseCards.get(groupKey) || "", suffix);
-        groupBaseCards.delete(groupKey);
-        groupBusySuffixes.delete(groupKey);
-        try {
-            client.setGroupCard(groupId, selfId, baseCard);
-        } catch (err) {
-            console.warn(`[QQ] Failed to restore group card: ${String(err)}`);
-        }
-        return;
+  const selfId = client.getSelfId();
+  if (!selfId) return;
+  const groupKey = `${accountId}:group:${groupId}`;
+  const current = groupBusyCounters.get(groupKey) || 0;
+  if (current <= 1) {
+    groupBusyCounters.delete(groupKey);
+    const suffix = (groupBusySuffixes.get(groupKey) || busySuffix || "输入中").trim() || "输入中";
+    const baseCard = stripTrailingBusySuffixes(groupBaseCards.get(groupKey) || "", suffix);
+    groupBaseCards.delete(groupKey);
+    groupBusySuffixes.delete(groupKey);
+    try {
+      client.setGroupCard(groupId, selfId, baseCard);
+    } catch (err) {
+      console.warn(`[QQ] Failed to restore group card: ${String(err)}`);
     }
-    groupBusyCounters.set(groupKey, current - 1);
+    return;
+  }
+  groupBusyCounters.set(groupKey, current - 1);
 }
 
 function getClientForAccount(accountId: string | undefined | null) {
-    const lookupId = normalizeAccountLookupId(accountId);
-    const direct = clients.get(lookupId);
-    if (direct) return direct;
+  const lookupId = normalizeAccountLookupId(accountId);
+  const direct = clients.get(lookupId);
+  if (direct) return direct;
 
-    const normalized = normalizeAccountId(lookupId);
-    if (normalized && clients.has(normalized)) {
-        return clients.get(normalized);
-    }
+  const normalized = normalizeAccountId(lookupId);
+  if (normalized && clients.has(normalized)) {
+    return clients.get(normalized);
+  }
 
-    const suffix = lookupId.includes(":") ? lookupId.split(":").pop() : lookupId;
-    if (suffix && clients.has(suffix)) {
-        return clients.get(suffix);
-    }
+  const suffix = lookupId.includes(":") ? lookupId.split(":").pop() : lookupId;
+  if (suffix && clients.has(suffix)) {
+    return clients.get(suffix);
+  }
 
-    if (clients.size === 1) {
-        return Array.from(clients.values())[0];
-    }
+  if (clients.size === 1) {
+    return Array.from(clients.values())[0];
+  }
 
-    console.warn(`[QQ] Client lookup miss: requested=${String(accountId)} resolved=${lookupId} keys=${Array.from(clients.keys()).join(",")}`);
-    return undefined;
+  console.warn(`[QQ] Client lookup miss: requested=${String(accountId)} resolved=${lookupId} keys=${Array.from(clients.keys()).join(",")}`);
+  return undefined;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function isImageFile(url: string): boolean {
-    const lower = url.toLowerCase();
-    return lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.png') || lower.endsWith('.gif') || lower.endsWith('.webp');
+  const lower = url.toLowerCase();
+  return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".gif") || lower.endsWith(".webp");
 }
 
 function isAudioFile(url: string): boolean {
-    const lower = url.toLowerCase();
-    return lower.endsWith('.wav') || lower.endsWith('.mp3') || lower.endsWith('.m4a') || lower.endsWith('.ogg') || lower.endsWith('.flac') || lower.endsWith('.aac');
+  const lower = url.toLowerCase();
+  return lower.endsWith(".wav") || lower.endsWith(".mp3") || lower.endsWith(".m4a") || lower.endsWith(".ogg") || lower.endsWith(".flac") || lower.endsWith(".aac");
 }
 
 function isVideoFile(url: string): boolean {
-    const lower = url.toLowerCase();
-    return lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".mkv") || lower.endsWith(".avi") || lower.endsWith(".webm") || lower.endsWith(".m4v");
+  const lower = url.toLowerCase();
+  return lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".mkv") || lower.endsWith(".avi") || lower.endsWith(".webm") || lower.endsWith(".m4v");
 }
 
 type MediaKind = "image" | "audio" | "video" | "file";
 
 function detectMediaKind(...values: Array<string | undefined | null>): MediaKind {
-    for (const value of values) {
-        if (!value) continue;
-        if (value.startsWith("base64://")) return "image";
-        if (isImageFile(value)) return "image";
-        if (isAudioFile(value)) return "audio";
-        if (isVideoFile(value)) return "video";
-    }
-    return "file";
+  for (const value of values) {
+    if (!value) continue;
+    if (value.startsWith("base64://")) return "image";
+    if (isImageFile(value)) return "image";
+    if (isAudioFile(value)) return "audio";
+    if (isVideoFile(value)) return "video";
+  }
+  return "file";
 }
 
 function classifyMediaError(error: string): "rich_media" | "timeout" | "connection" | "permission" | "unsupported" | "unknown" {
-    const msg = (error || "").toLowerCase();
-    if (msg.includes("rich media transfer failed") || msg.includes("rich media")) return "rich_media";
-    if (msg.includes("timeout")) return "timeout";
-    if (msg.includes("websocket not open") || msg.includes("econn") || msg.includes("connection")) return "connection";
-    if (msg.includes("permission") || msg.includes("forbidden") || msg.includes("denied")) return "permission";
-    if (msg.includes("unsupported") || msg.includes("not supported") || msg.includes("unknown action")) return "unsupported";
-    return "unknown";
+  const msg = (error || "").toLowerCase();
+  if (msg.includes("rich media transfer failed") || msg.includes("rich media")) return "rich_media";
+  if (msg.includes("timeout")) return "timeout";
+  if (msg.includes("websocket not open") || msg.includes("econn") || msg.includes("connection")) return "connection";
+  if (msg.includes("permission") || msg.includes("forbidden") || msg.includes("denied")) return "permission";
+  if (msg.includes("unsupported") || msg.includes("not supported") || msg.includes("unknown action")) return "unsupported";
+  return "unknown";
 }
 
 function parseGroupIdFromTarget(to: string): number | null {
-    const normalized = normalizeQQDeliveryTarget(to);
-    const { base } = splitTmpSuffix(normalized);
-    if (!/^group:/i.test(base)) return null;
-    const n = parseInt(base.replace(/^group:/i, ""), 10);
-    return Number.isFinite(n) ? n : null;
+  const normalized = normalizeQQDeliveryTarget(to);
+  const { base } = splitTmpSuffix(normalized);
+  if (!/^group:/i.test(base)) return null;
+  const n = parseInt(base.replace(/^group:/i, ""), 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 function parseUserIdFromTarget(to: string): number | null {
-    const trimmed = normalizeQQDeliveryTarget(String(to || "").trim());
-    const { base } = splitTmpSuffix(trimmed);
-    const raw = base.replace(/^(?:qq:)/i, "");
-    const match = raw.match(/^(?:user:)?(\d{5,12})$/i);
-    if (!match) return null;
-    const n = parseInt(match[1], 10);
-    return Number.isFinite(n) ? n : null;
+  const trimmed = normalizeQQDeliveryTarget(String(to || "").trim());
+  const { base } = splitTmpSuffix(trimmed);
+  const raw = base.replace(/^(?:qq:)/i, "");
+  const match = raw.match(/^(?:user:)?(\d{5,12})$/i);
+  if (!match) return null;
+  const n = parseInt(match[1], 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 function guessFileName(input: string): string {
-    const local = toLocalPathIfAny(input);
-    const name = path.basename(local || input.split("?")[0].split("#")[0]);
-    if (!name || name === "." || name === "/") return `media_${Date.now()}.bin`;
-    return name;
+  const local = toLocalPathIfAny(input);
+  const name = path.basename(local || input.split("?")[0].split("#")[0]);
+  if (!name || name === "." || name === "/") return `media_${Date.now()}.bin`;
+  return name;
 }
 
 async function stageLocalFileForContainer(localPath: string, hostSharedDir: string, containerSharedDir: string): Promise<string | null> {
-    if (!hostSharedDir) return null;
-    try {
-        const copiedName = await ensureFileInSharedMedia(localPath, hostSharedDir);
-        return path.posix.join(containerSharedDir.replace(/\\/g, "/"), copiedName);
-    } catch (err) {
-        console.warn(`[QQ] Failed to stage local file into shared media dir: ${String(err)}`);
-        return null;
-    }
+  if (!hostSharedDir) return null;
+  try {
+    const copiedName = await ensureFileInSharedMedia(localPath, hostSharedDir);
+    return path.posix.join(containerSharedDir.replace(/\\/g, "/"), copiedName);
+  } catch (err) {
+    console.warn(`[QQ] Failed to stage local file into shared media dir: ${String(err)}`);
+    return null;
+  }
 }
 
-async function uploadGroupFile(
-    client: OneBotClient,
-    groupId: number,
-    filePath: string,
-    fileName: string,
-): Promise<{ ok: boolean; data?: any; error?: string }> {
-    try {
-        const data = await (client as any).sendWithResponse("upload_group_file", {
-            group_id: groupId,
-            file: filePath,
-            name: fileName,
-        }, 30000);
-        return { ok: true, data };
-    } catch (err) {
-        return { ok: false, error: String(err) };
-    }
+async function uploadGroupFile(client: OneBotClient, groupId: number, filePath: string, fileName: string): Promise<{ ok: boolean; data?: any; error?: string }> {
+  try {
+    const data = await (client as any).sendWithResponse(
+      "upload_group_file",
+      {
+        group_id: groupId,
+        file: filePath,
+        name: fileName,
+      },
+      30000,
+    );
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
 }
 
 async function findRecentAudioFallback(preferredExt?: string): Promise<string | null> {
-    const home = process.env.HOME;
-    if (!home) return null;
-    const fallbackDir = path.join(home, ".openclaw", "workspace", "voicevox_output");
-    try {
-        const entries = await fs.readdir(fallbackDir, { withFileTypes: true });
-        const candidates = entries
-            .filter((entry) => entry.isFile())
-            .map((entry) => path.join(fallbackDir, entry.name))
-            .filter((filePath) => isAudioFile(filePath));
-        if (candidates.length === 0) return null;
+  const home = process.env.HOME;
+  if (!home) return null;
+  const fallbackDir = path.join(home, ".openclaw", "workspace", "voicevox_output");
+  try {
+    const entries = await fs.readdir(fallbackDir, { withFileTypes: true });
+    const candidates = entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.join(fallbackDir, entry.name))
+      .filter((filePath) => isAudioFile(filePath));
+    if (candidates.length === 0) return null;
 
-        const preferred = preferredExt ? candidates.filter((filePath) => filePath.toLowerCase().endsWith(preferredExt.toLowerCase())) : [];
-        const pool = preferred.length > 0 ? preferred : candidates;
+    const preferred = preferredExt ? candidates.filter((filePath) => filePath.toLowerCase().endsWith(preferredExt.toLowerCase())) : [];
+    const pool = preferred.length > 0 ? preferred : candidates;
 
-        let bestPath: string | null = null;
-        let bestMtime = 0;
-        for (const filePath of pool) {
-            const stat = await fs.stat(filePath);
-            const mtime = stat.mtimeMs || 0;
-            if (mtime > bestMtime) {
-                bestMtime = mtime;
-                bestPath = filePath;
-            }
-        }
-        return bestPath;
-    } catch {
-        return null;
+    let bestPath: string | null = null;
+    let bestMtime = 0;
+    for (const filePath of pool) {
+      const stat = await fs.stat(filePath);
+      const mtime = stat.mtimeMs || 0;
+      if (mtime > bestMtime) {
+        bestMtime = mtime;
+        bestPath = filePath;
+      }
     }
+    return bestPath;
+  } catch {
+    return null;
+  }
 }
 
 async function readLocalFileAsBase64(localPath: string): Promise<string> {
-    const data = await fs.readFile(localPath);
-    return `base64://${data.toString("base64")}`;
+  const data = await fs.readFile(localPath);
+  return `base64://${data.toString("base64")}`;
 }
 
 async function ensureFileInSharedMedia(localPath: string, hostSharedDir: string): Promise<string> {
-    const ext = path.extname(localPath) || ".dat";
-    const baseName = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${ext}`;
-    await fs.mkdir(hostSharedDir, { recursive: true });
-    const destPath = path.join(hostSharedDir, baseName);
-    await fs.copyFile(localPath, destPath);
-    return baseName;
+  const ext = path.extname(localPath) || ".dat";
+  const baseName = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${ext}`;
+  await fs.mkdir(hostSharedDir, { recursive: true });
+  const destPath = path.join(hostSharedDir, baseName);
+  await fs.copyFile(localPath, destPath);
+  return baseName;
 }
 
 function toLocalPathIfAny(value: string): string | null {
-    if (!value) return null;
-    if (value.startsWith("file:")) {
-        try {
-            return fileURLToPath(value);
-        } catch {
-            return null;
-        }
+  if (!value) return null;
+  if (value.startsWith("file:")) {
+    try {
+      return fileURLToPath(value);
+    } catch {
+      return null;
     }
-    if (
-        value.startsWith("/") ||
-        value.startsWith("./") ||
-        value.startsWith("../") ||
-        /^[A-Za-z]:[\\/]/.test(value)
-    ) {
-        return path.isAbsolute(value) ? value : path.resolve(process.cwd(), value);
-    }
-    return null;
+  }
+  if (value.startsWith("/") || value.startsWith("./") || value.startsWith("../") || /^[A-Za-z]:[\\/]/.test(value)) {
+    return path.isAbsolute(value) ? value : path.resolve(process.cwd(), value);
+  }
+  return null;
 }
 
 function splitMessage(text: string, limit: number): string[] {
-    if (text.length <= limit) return [text];
-    const chunks = [];
-    let current = text;
-    while (current.length > 0) {
-        chunks.push(current.slice(0, limit));
-        current = current.slice(limit);
-    }
-    return chunks;
+  if (text.length <= limit) return [text];
+  const chunks = [];
+  let current = text;
+  while (current.length > 0) {
+    chunks.push(current.slice(0, limit));
+    current = current.slice(limit);
+  }
+  return chunks;
 }
 
 function resolveOutboundMessageId(...candidates: Array<unknown>): string {
-    for (const candidate of candidates) {
-        if (candidate && typeof candidate === "object") {
-            const fromAck = (candidate as any).message_id ?? (candidate as any).messageId;
-            if (fromAck !== undefined && fromAck !== null && String(fromAck).trim()) {
-                return String(fromAck).trim();
-            }
-        }
-        if (candidate !== undefined && candidate !== null && String(candidate).trim()) {
-            return String(candidate).trim();
-        }
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object") {
+      const fromAck = (candidate as any).message_id ?? (candidate as any).messageId;
+      if (fromAck !== undefined && fromAck !== null && String(fromAck).trim()) {
+        return String(fromAck).trim();
+      }
     }
-    return `qq-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    if (candidate !== undefined && candidate !== null && String(candidate).trim()) {
+      return String(candidate).trim();
+    }
+  }
+  return `qq-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function buildQQHiddenMetaBlock(params: {
-    accountId: string;
-    userId: number;
-    isGroup: boolean;
-    isGuild: boolean;
-    groupId?: number;
-    guildId?: string;
-    channelId?: string;
-    conversationLabel: string;
-    sessionLabel: string;
-    senderName?: string;
-    senderRole?: string;
-    isAdmin: boolean;
-    activeTempSlot: string | null;
-    mentionedByAt: boolean;
-    mentionedByReply: boolean;
-    keywordTriggered: boolean;
+  accountId: string;
+  userId: number;
+  isGroup: boolean;
+  isGuild: boolean;
+  groupId?: number;
+  guildId?: string;
+  channelId?: string;
+  conversationLabel: string;
+  sessionLabel: string;
+  senderName?: string;
+  senderRole?: string;
+  isAdmin: boolean;
+  activeTempSlot: string | null;
+  mentionedByAt: boolean;
+  mentionedByReply: boolean;
+  keywordTriggered: boolean;
 }): string {
-    const chatType = params.isGroup ? "group" : params.isGuild ? "guild" : "direct";
-    const triggerSummary = [
-        params.mentionedByAt ? "mention" : "",
-        params.mentionedByReply ? "reply" : "",
-        params.keywordTriggered ? "keyword" : "",
-    ].filter(Boolean).join(",");
-    const lines = [
-        "<qq_context>",
-        `accountId=${params.accountId}`,
-        `chatType=${chatType}`,
-        `userId=${params.userId}`,
-        params.isGroup ? `groupId=${String(params.groupId ?? "")}` : "",
-        params.isGuild ? `guildId=${String(params.guildId ?? "")}` : "",
-        params.isGuild ? `channelId=${String(params.channelId ?? "")}` : "",
-        `senderName=${params.senderName || "unknown"}`,
-        `senderRole=${params.senderRole || "unknown"}`,
-        `isAdmin=${String(params.isAdmin)}`,
-        `trigger=${triggerSummary || "normal"}`,
-        `tempSession=${params.activeTempSlot || "none"}`,
-        `conversationLabel=${params.conversationLabel}`,
-        `sessionLabel=${params.sessionLabel}`,
-        "</qq_context>",
-    ].filter(Boolean);
-    return `${lines.join("\n")}\n\n`;
+  const chatType = params.isGroup ? "group" : params.isGuild ? "guild" : "direct";
+  const triggerSummary = [params.mentionedByAt ? "mention" : "", params.mentionedByReply ? "reply" : "", params.keywordTriggered ? "keyword" : ""].filter(Boolean).join(",");
+  const lines = [
+    "<qq_context>",
+    `accountId=${params.accountId}`,
+    `chatType=${chatType}`,
+    `userId=${params.userId}`,
+    params.isGroup ? `groupId=${String(params.groupId ?? "")}` : "",
+    params.isGuild ? `guildId=${String(params.guildId ?? "")}` : "",
+    params.isGuild ? `channelId=${String(params.channelId ?? "")}` : "",
+    `senderName=${params.senderName || "unknown"}`,
+    `senderRole=${params.senderRole || "unknown"}`,
+    `isAdmin=${String(params.isAdmin)}`,
+    `trigger=${triggerSummary || "normal"}`,
+    `tempSession=${params.activeTempSlot || "none"}`,
+    `conversationLabel=${params.conversationLabel}`,
+    `sessionLabel=${params.sessionLabel}`,
+    "</qq_context>",
+  ].filter(Boolean);
+  return `${lines.join("\n")}\n\n`;
 }
 
 function resolveReplySessionSourceLabel(activeTempSlot: string | null): string {
-    const cleaned = sanitizeTempSlotName(activeTempSlot || "");
-    return cleaned ? `会话${cleaned}` : "主会话";
+  const cleaned = sanitizeTempSlotName(activeTempSlot || "");
+  return cleaned ? `会话${cleaned}` : "主会话";
 }
 
 function buildReplySessionSourcePrefix(activeTempSlot: string | null): string {
-    return `(from ${resolveReplySessionSourceLabel(activeTempSlot)})`;
+  return `(from ${resolveReplySessionSourceLabel(activeTempSlot)})`;
 }
 
 function normalizeAssistantTextPhase(value: unknown): "commentary" | "final_answer" | undefined {
-    return value === "commentary" || value === "final_answer" ? value : undefined;
+  return value === "commentary" || value === "final_answer" ? value : undefined;
 }
 
 function resolveReplyPayloadPhase(payload: any): "commentary" | "final_answer" | undefined {
-    const directPhase = normalizeAssistantTextPhase(payload?.phase);
-    if (directPhase) return directPhase;
-    const rawSignature = payload?.textSignature;
-    if (typeof rawSignature === "string") {
-        const trimmed = rawSignature.trim();
-        if (!trimmed.startsWith("{")) return undefined;
-        try {
-            const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-            return normalizeAssistantTextPhase(parsed.phase);
-        } catch {
-            return undefined;
-        }
+  const directPhase = normalizeAssistantTextPhase(payload?.phase);
+  if (directPhase) return directPhase;
+  const rawSignature = payload?.textSignature;
+  if (typeof rawSignature === "string") {
+    const trimmed = rawSignature.trim();
+    if (!trimmed.startsWith("{")) return undefined;
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      return normalizeAssistantTextPhase(parsed.phase);
+    } catch {
+      return undefined;
     }
-    if (rawSignature && typeof rawSignature === "object") {
-        return normalizeAssistantTextPhase((rawSignature as Record<string, unknown>).phase);
-    }
-    return undefined;
+  }
+  if (rawSignature && typeof rawSignature === "object") {
+    return normalizeAssistantTextPhase((rawSignature as Record<string, unknown>).phase);
+  }
+  return undefined;
 }
 
 async function sendLongTextAsForwardMessage(params: {
-    client: OneBotClient;
-    groupId: number;
-    text?: string;
-    texts?: string[];
-    nodeName: string;
-    nodeUin: string;
-    nodeCharLimit: number;
+  client: OneBotClient;
+  groupId: number;
+  text?: string;
+  texts?: string[];
+  nodeName: string;
+  nodeUin: string;
+  nodeCharLimit: number;
 }): Promise<boolean> {
-    const rawTexts = (Array.isArray(params.texts) ? params.texts : [params.text ?? ""])
-        .filter((text): text is string => typeof text === "string" && text.trim().length > 0);
-    if (rawTexts.length === 0) return false;
+  const rawTexts = (Array.isArray(params.texts) ? params.texts : [params.text ?? ""]).filter((text): text is string => typeof text === "string" && text.trim().length > 0);
+  if (rawTexts.length === 0) return false;
 
-    const buildForwardMessages = (nodeCharLimit: number) => {
-        const shouldSplitNodes = Number.isFinite(nodeCharLimit) && nodeCharLimit > 0;
-        const safeNodeLimit = shouldSplitNodes ? Math.max(200, Math.floor(nodeCharLimit)) : 0;
-        const chunks = shouldSplitNodes
-            ? rawTexts.flatMap((text) => splitMessage(text, safeNodeLimit))
-            : [rawTexts.join("")];
-        return chunks
-            .filter((chunk) => typeof chunk === "string" && chunk.trim().length > 0)
-            .map((chunk) => ({
-                type: "node",
-                data: {
-                    name: params.nodeName,
-                    uin: params.nodeUin,
-                    content: chunk,
-                },
-            }));
-    };
+  const buildForwardMessages = (nodeCharLimit: number) => {
+    const shouldSplitNodes = Number.isFinite(nodeCharLimit) && nodeCharLimit > 0;
+    const safeNodeLimit = shouldSplitNodes ? Math.max(200, Math.floor(nodeCharLimit)) : 0;
+    const chunks = shouldSplitNodes ? rawTexts.flatMap((text) => splitMessage(text, safeNodeLimit)) : [rawTexts.join("")];
+    return chunks
+      .filter((chunk) => typeof chunk === "string" && chunk.trim().length > 0)
+      .map((chunk) => ({
+        type: "node",
+        data: {
+          name: params.nodeName,
+          uin: params.nodeUin,
+          content: chunk,
+        },
+      }));
+  };
 
-    const attemptForwardSend = async (messages: Array<Record<string, unknown>>, label: string): Promise<boolean> => {
-        const tries: Array<{ action: string; params: Record<string, unknown> }> = [
-            { action: "send_group_forward_msg", params: { group_id: params.groupId, messages } },
-            { action: "send_forward_msg", params: { group_id: params.groupId, messages } },
-        ];
-        for (const attempt of tries) {
-            try {
-                await (params.client as any).sendWithResponse(attempt.action, attempt.params, 15000);
-                console.log(`[QQ] forward-send success mode=${label} nodes=${messages.length} group=${params.groupId} action=${attempt.action}`);
-                return true;
-            } catch (err) {
-                console.warn(`[QQ] forward-send failed mode=${label} nodes=${messages.length} group=${params.groupId} action=${attempt.action} err=${String(err)}`);
-            }
-        }
-        return false;
-    };
-
-    const preferredNodeLimitRaw = Number(params.nodeCharLimit);
-    const preferredNodeLimit = Number.isFinite(preferredNodeLimitRaw) ? preferredNodeLimitRaw : 0;
-    const preferredMessages = buildForwardMessages(preferredNodeLimit);
-    if (preferredMessages.length > 0 && await attemptForwardSend(preferredMessages, preferredNodeLimit > 0 ? `split_${Math.floor(preferredNodeLimit)}` : "single_node")) {
+  const attemptForwardSend = async (messages: Array<Record<string, unknown>>, label: string): Promise<boolean> => {
+    const tries: Array<{ action: string; params: Record<string, unknown> }> = [
+      { action: "send_group_forward_msg", params: { group_id: params.groupId, messages } },
+      { action: "send_forward_msg", params: { group_id: params.groupId, messages } },
+    ];
+    for (const attempt of tries) {
+      try {
+        await (params.client as any).sendWithResponse(attempt.action, attempt.params, 15000);
+        console.log(`[QQ] forward-send success mode=${label} nodes=${messages.length} group=${params.groupId} action=${attempt.action}`);
         return true;
-    }
-
-    if (preferredNodeLimit <= 0) {
-        const fallbackNodeLimit = 2400;
-        const fallbackMessages = buildForwardMessages(fallbackNodeLimit);
-        if (fallbackMessages.length > 1 && await attemptForwardSend(fallbackMessages, `fallback_split_${fallbackNodeLimit}`)) {
-            return true;
-        }
+      } catch (err) {
+        console.warn(`[QQ] forward-send failed mode=${label} nodes=${messages.length} group=${params.groupId} action=${attempt.action} err=${String(err)}`);
+      }
     }
     return false;
+  };
+
+  const preferredNodeLimitRaw = Number(params.nodeCharLimit);
+  const preferredNodeLimit = Number.isFinite(preferredNodeLimitRaw) ? preferredNodeLimitRaw : 0;
+  const preferredMessages = buildForwardMessages(preferredNodeLimit);
+  if (preferredMessages.length > 0 && (await attemptForwardSend(preferredMessages, preferredNodeLimit > 0 ? `split_${Math.floor(preferredNodeLimit)}` : "single_node"))) {
+    return true;
+  }
+
+  if (preferredNodeLimit <= 0) {
+    const fallbackNodeLimit = 2400;
+    const fallbackMessages = buildForwardMessages(fallbackNodeLimit);
+    if (fallbackMessages.length > 1 && (await attemptForwardSend(fallbackMessages, `fallback_split_${fallbackNodeLimit}`))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function stripMarkdown(text: string): string {
-    return text
-        .replace(/\*\*(.*?)\*\*/g, "$1") // Bold
-        .replace(/\*(.*?)\*/g, "$1")     // Italic
-        .replace(/`(.*?)`/g, "$1")       // Inline code
-        .replace(/#+\s+(.*)/g, "$1")     // Headers
-        .replace(/\[(.*?)\]\(.*?\)/g, "$1") // Links
-        .replace(/^\s*>\s+(.*)/gm, "▎$1") // Blockquotes
-        .replace(/```[\s\S]*?```/g, "[代码块]") // Code blocks
-        .replace(/^\|.*\|$/gm, (match) => { // Simple table row approximation
-            return match.replace(/\|/g, " ").trim();
-        })
-        .replace(/^[\-\*]\s+/gm, "• "); // Lists
+  return text
+    .replace(/\*\*(.*?)\*\*/g, "$1") // Bold
+    .replace(/\*(.*?)\*/g, "$1") // Italic
+    .replace(/`(.*?)`/g, "$1") // Inline code
+    .replace(/#+\s+(.*)/g, "$1") // Headers
+    .replace(/\[(.*?)\]\(.*?\)/g, "$1") // Links
+    .replace(/^\s*>\s+(.*)/gm, "▎$1") // Blockquotes
+    .replace(/```[\s\S]*?```/g, "[代码块]") // Code blocks
+    .replace(/^\|.*\|$/gm, (match) => {
+      // Simple table row approximation
+      return match.replace(/\|/g, " ").trim();
+    })
+    .replace(/^[\-\*]\s+/gm, "• "); // Lists
 }
 
 function processAntiRisk(text: string): string {
-    return text.replace(/(https?:\/\/)/gi, "$1 ");
+  return text.replace(/(https?:\/\/)/gi, "$1 ");
 }
 
 async function resolveMediaUrl(url: string): Promise<string> {
-    if (url.startsWith("file:")) {
+  if (url.startsWith("file:")) {
+    try {
+      const localPath = fileURLToPath(url);
+      return await readLocalFileAsBase64(localPath);
+    } catch (e) {
+      const preferredExt = path.extname(url);
+      const fallback = await findRecentAudioFallback(preferredExt);
+      if (fallback) {
         try {
-            const localPath = fileURLToPath(url);
-            return await readLocalFileAsBase64(localPath);
-        } catch (e) {
-            const preferredExt = path.extname(url);
-            const fallback = await findRecentAudioFallback(preferredExt);
-            if (fallback) {
-                try {
-                    console.warn(`[QQ] Local media missing, fallback to recent audio: ${fallback}`);
-                    return await readLocalFileAsBase64(fallback);
-                } catch { }
-            }
-            console.warn(`[QQ] Failed to convert local file to base64: ${e}`);
-            return url;
-        }
+          console.warn(`[QQ] Local media missing, fallback to recent audio: ${fallback}`);
+          return await readLocalFileAsBase64(fallback);
+        } catch {}
+      }
+      console.warn(`[QQ] Failed to convert local file to base64: ${e}`);
+      return url;
     }
+  }
 
-    const looksLocalPath =
-        url.startsWith("/") ||
-        url.startsWith("./") ||
-        url.startsWith("../") ||
-        /^[A-Za-z]:[\\/]/.test(url);
-    if (looksLocalPath) {
-        try {
-            const absolutePath = path.isAbsolute(url) ? url : path.resolve(process.cwd(), url);
-            return await readLocalFileAsBase64(absolutePath);
-        } catch (e) {
-            if (isAudioFile(url)) {
-                const preferredExt = path.extname(url);
-                const fallback = await findRecentAudioFallback(preferredExt);
-                if (fallback) {
-                    try {
-                        console.warn(`[QQ] Local audio path unavailable, fallback to ${fallback}`);
-                        return await readLocalFileAsBase64(fallback);
-                    } catch { }
-                }
-            }
-            console.warn(`[QQ] Failed to read local media path for base64 conversion: ${url} (${e})`);
-            return url;
+  const looksLocalPath = url.startsWith("/") || url.startsWith("./") || url.startsWith("../") || /^[A-Za-z]:[\\/]/.test(url);
+  if (looksLocalPath) {
+    try {
+      const absolutePath = path.isAbsolute(url) ? url : path.resolve(process.cwd(), url);
+      return await readLocalFileAsBase64(absolutePath);
+    } catch (e) {
+      if (isAudioFile(url)) {
+        const preferredExt = path.extname(url);
+        const fallback = await findRecentAudioFallback(preferredExt);
+        if (fallback) {
+          try {
+            console.warn(`[QQ] Local audio path unavailable, fallback to ${fallback}`);
+            return await readLocalFileAsBase64(fallback);
+          } catch {}
         }
+      }
+      console.warn(`[QQ] Failed to read local media path for base64 conversion: ${url} (${e})`);
+      return url;
     }
+  }
 
-    return url;
+  return url;
 }
 
 async function resolveInlineCqRecord(text: string): Promise<string> {
-    const regex = /\[CQ:record,([^\]]*)\]/g;
-    let result = text;
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(text)) !== null) {
-        const whole = match[0];
-        const params = match[1];
-        const fileMatch = params.match(/(?:^|,)file=([^,]+)/);
-        if (!fileMatch) continue;
-        const rawFile = fileMatch[1].trim();
-        const decoded = rawFile.replace(/&amp;/g, "&");
-        const converted = await resolveMediaUrl(decoded);
-        if (converted === decoded) continue;
-        const nextParams = params.replace(fileMatch[1], converted);
-        result = result.replace(whole, `[CQ:record,${nextParams}]`);
-    }
-    return result;
+  const regex = /\[CQ:record,([^\]]*)\]/g;
+  let result = text;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const whole = match[0];
+    const params = match[1];
+    const fileMatch = params.match(/(?:^|,)file=([^,]+)/);
+    if (!fileMatch) continue;
+    const rawFile = fileMatch[1].trim();
+    const decoded = rawFile.replace(/&amp;/g, "&");
+    const converted = await resolveMediaUrl(decoded);
+    if (converted === decoded) continue;
+    const nextParams = params.replace(fileMatch[1], converted);
+    result = result.replace(whole, `[CQ:record,${nextParams}]`);
+  }
+  return result;
 }
 
 async function sendOneBotMessageWithAck(client: OneBotClient, to: string, message: OneBotMessage | string): Promise<{ ok: boolean; data?: any; error?: string }> {
-    try {
-        if (to.startsWith("group:")) {
-            const data = await client.sendGroupMsgAck(parseInt(to.replace("group:", ""), 10), message);
-            return { ok: true, data };
-        }
-        if (to.startsWith("guild:")) {
-            const parts = to.split(":");
-            if (parts.length >= 3) {
-                const data = await client.sendGuildChannelMsgAck(parts[1], parts[2], message);
-                return { ok: true, data };
-            }
-            return { ok: false, error: `Invalid guild target: ${to}` };
-        }
-        const userId = parseUserIdFromTarget(to);
-        if (!userId) {
-            return { ok: false, error: `Invalid private target: ${to}` };
-        }
-        const data = await client.sendPrivateMsgAck(userId, message);
-        return { ok: true, data };
-    } catch (err) {
-        return { ok: false, error: String(err) };
+  try {
+    if (to.startsWith("group:")) {
+      const data = await client.sendGroupMsgAck(parseInt(to.replace("group:", ""), 10), message);
+      return { ok: true, data };
     }
+    if (to.startsWith("guild:")) {
+      const parts = to.split(":");
+      if (parts.length >= 3) {
+        const data = await client.sendGuildChannelMsgAck(parts[1], parts[2], message);
+        return { ok: true, data };
+      }
+      return { ok: false, error: `Invalid guild target: ${to}` };
+    }
+    const userId = parseUserIdFromTarget(to);
+    if (!userId) {
+      return { ok: false, error: `Invalid private target: ${to}` };
+    }
+    const data = await client.sendPrivateMsgAck(userId, message);
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
 }
 
 export const qqChannel: ChannelPlugin<ResolvedQQAccount> = {
+  id: "qq",
+  meta: {
     id: "qq",
-    meta: {
-        id: "qq",
-        label: "QQ (OneBot)",
-        selectionLabel: "QQ",
-        docsPath: "extensions/qq",
-        blurb: "Connect to QQ via OneBot v11",
+    label: "QQ (OneBot)",
+    selectionLabel: "QQ",
+    docsPath: "extensions/qq",
+    blurb: "Connect to QQ via OneBot v11",
+  },
+  capabilities: {
+    chatTypes: ["direct", "group"],
+    media: true,
+    blockStreaming: true,
+    // @ts-ignore
+    deleteMessage: true,
+  },
+  configSchema: (() => {
+    const baseSchema = buildChannelConfigSchema(QQConfigSchema) as any;
+    return {
+      ...baseSchema,
+      uiHints: {
+        ...(baseSchema.uiHints || {}),
+        maxRetries: {
+          label: "自动重试次数",
+          help: "默认 0（关闭）。模型报错或返回空内容时，最多再试几次；次数越大越稳，但等待也会更久。",
+        },
+        retryDelayMs: {
+          label: "重试间隔（毫秒）",
+          help: "默认预置 3000ms；仅在自动重试次数大于 0 时生效。",
+        },
+        fastFailErrors: {
+          label: "快速跳过错误关键词",
+          help: "默认关闭（空数组）。填写如 401、Unauthorized、余额不足 后，命中时会直接跳过当前模型。",
+        },
+        queueDebounceMs: {
+          label: "同会话消息合并窗口（毫秒）",
+          help: "默认 0（关闭）。大于 0 时，短时间连续发来的多条消息会先合并再处理。",
+        },
+        interruptOnNewMessage: {
+          label: "新消息打断旧回复",
+          help: "默认关闭。同一会话里来了更新的消息时，可优先切换去处理新消息。",
+        },
+        injectGatewayMeta: {
+          label: "注入隐藏 QQ 网关上下文",
+          help: "默认关闭。开启后会给模型注入不可见的会话来源/触发方式等上下文。",
+        },
+        blockStreaming: {
+          label: "按消息分块发送",
+          help: "默认开启。推荐保留开启，让 commentary / final 按完整 assistant message 落地，不再只等最后一条最终回复。",
+        },
+        blockStreamingBreak: {
+          label: "分块发送边界",
+          help: "默认 message_end。每条 assistant message 完成后再发，更适合 QQ 群聊，也能减少工具调用前后的边界丢失。",
+        },
+        enrichReplyForwardContext: {
+          label: "解析 reply/forward 多层上下文",
+          help: "默认开启。会递归展开引用和合并转发内容，方便模型理解‘你在回谁、上下文是什么’。",
+        },
+        forwardLongReplyThreshold: {
+          label: "长回复转合并转发阈值",
+          help: "final_answer 大于这个字符数时，自动改用 QQ 合并转发发送。默认 300；commentary 仍按普通消息发送。",
+        },
+        showReplySessionSource: {
+          label: "回复前标注来源会话",
+          help: "默认开启。回复前会自动加上 `(from 主会话)` 或 `(from 会话xxx)`，特别适合用了 /会话 之后快速分辨当前回复来自哪个会话。",
+        },
+        keywordOnlyTrigger: {
+          label: "群聊仅关键词触发",
+          help: "开启后会忽略 @ 和回复触发；群聊里只有命中关键词才会触发。",
+        },
+        allowBareGroupCommands: {
+          label: "允许群聊裸 slash 指令",
+          help: "默认关闭。关闭后，/model 这类群聊指令需要配合关键词触发；如果想恢复旧体验再手动开启。",
+        },
+      },
+    };
+  })(),
+  config: {
+    listAccountIds: (cfg) => {
+      // @ts-ignore
+      const qq = cfg.channels?.qq;
+      if (!qq) return [];
+      if (qq.accounts) return Object.keys(qq.accounts);
+      return [DEFAULT_ACCOUNT_ID];
     },
-    capabilities: {
-        chatTypes: ["direct", "group"],
-        media: true,
-        blockStreaming: true,
-        // @ts-ignore
-        deleteMessage: true,
+    resolveAccount: (cfg, accountId) => {
+      const id = accountId ?? DEFAULT_ACCOUNT_ID;
+      // @ts-ignore
+      const qq = cfg.channels?.qq;
+      const accountConfig = id === DEFAULT_ACCOUNT_ID ? qq : qq?.accounts?.[id];
+      return {
+        accountId: id,
+        name: accountConfig?.name ?? "QQ Default",
+        enabled: true,
+        configured: Boolean(accountConfig?.wsUrl),
+        tokenSource: accountConfig?.accessToken ? "config" : "none",
+        config: accountConfig || {},
+      };
     },
-    configSchema: (() => {
-        const baseSchema = buildChannelConfigSchema(QQConfigSchema) as any;
+    defaultAccountId: () => DEFAULT_ACCOUNT_ID,
+    describeAccount: (acc) => ({
+      accountId: acc.accountId,
+      configured: acc.configured,
+      blockStreaming: acc.config.blockStreaming ?? true,
+      blockStreamingBreak: acc.config.blockStreamingBreak ?? "message_end",
+      forwardLongReplyThreshold: acc.config.forwardLongReplyThreshold ?? 300,
+    }),
+  },
+  directory: {
+    listPeers: async ({ accountId }) => {
+      const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
+      if (!client) return [];
+      try {
+        const friends = await client.getFriendList();
+        return friends.map((f) => ({
+          kind: "user" as const,
+          id: String(f.user_id),
+          name: f.remark || f.nickname,
+          raw: { ...f },
+        }));
+      } catch (e) {
+        return [];
+      }
+    },
+    listGroups: async ({ accountId, cfg }) => {
+      const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
+      if (!client) return [];
+      const list: any[] = [];
+
+      try {
+        const groups = await client.getGroupList();
+        list.push(
+          ...groups.map((g) => ({
+            kind: "group" as const,
+            id: String(g.group_id),
+            name: g.group_name,
+            raw: { ...g },
+          })),
+        );
+      } catch (e) {}
+
+      // @ts-ignore
+      const enableGuilds = cfg?.channels?.qq?.enableGuilds ?? true;
+      if (enableGuilds) {
+        try {
+          const guilds = await client.getGuildList();
+          list.push(
+            ...guilds.map((g) => ({
+              kind: "channel" as const,
+              id: `guild:${g.guild_id}`,
+              name: `[频道] ${g.guild_name}`,
+              raw: { ...g },
+            })),
+          );
+        } catch (e) {}
+      }
+      return list;
+    },
+  },
+  status: {
+    probeAccount: async ({ account, timeoutMs }) => {
+      if (!account.config.wsUrl) return { ok: false, error: "Missing wsUrl" };
+
+      const runningClient = clients.get(account.accountId);
+      if (runningClient) {
+        try {
+          const info = await Promise.race([runningClient.getLoginInfo(), new Promise((_, reject) => setTimeout(() => reject(new Error("Probe timeout")), timeoutMs || 5000))]);
+          const data = info as any;
+          return {
+            ok: true,
+            bot: { id: String(data?.user_id ?? ""), username: data?.nickname },
+          };
+        } catch (err) {
+          return { ok: false, error: String(err) };
+        }
+      }
+
+      const client = new OneBotClient({
+        wsUrl: account.config.wsUrl,
+        accessToken: account.config.accessToken,
+      });
+
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          client.disconnect();
+          resolve({ ok: false, error: "Connection timeout" });
+        }, timeoutMs || 5000);
+
+        client.on("connect", async () => {
+          try {
+            const info = await client.getLoginInfo();
+            clearTimeout(timer);
+            client.disconnect();
+            resolve({
+              ok: true,
+              bot: { id: String(info.user_id), username: info.nickname },
+            });
+          } catch (e) {
+            clearTimeout(timer);
+            client.disconnect();
+            resolve({ ok: false, error: String(e) });
+          }
+        });
+
+        client.on("error", (err) => {
+          clearTimeout(timer);
+          client.disconnect();
+          resolve({ ok: false, error: String(err) });
+        });
+
+        client.connect();
+      });
+    },
+    buildAccountSnapshot: ({ account, runtime, probe }) => {
+      return {
+        accountId: account.accountId,
+        name: account.name,
+        enabled: account.enabled,
+        configured: account.configured,
+        running: runtime?.running ?? false,
+        lastStartAt: runtime?.lastStartAt ?? null,
+        lastError: runtime?.lastError ?? null,
+        probe,
+      };
+    },
+  },
+  setup: {
+    resolveAccountId: ({ accountId }) => normalizeAccountId(accountId),
+    applyAccountName: ({ cfg, accountId, name }) => applyAccountNameToChannelSection({ cfg, channelKey: "qq", accountId, name }),
+    validateInput: ({ input }) => null,
+    applyAccountConfig: ({ cfg, accountId, input }) => {
+      const setupInput = input as QQSetupInput;
+      const namedConfig = applyAccountNameToChannelSection({
+        cfg,
+        channelKey: "qq",
+        accountId,
+        name: setupInput.name,
+      });
+
+      const next = accountId !== DEFAULT_ACCOUNT_ID ? migrateBaseNameToDefaultAccount({ cfg: namedConfig, channelKey: "qq" }) : namedConfig;
+
+      const newConfig = {
+        wsUrl: setupInput.wsUrl || setupInput.url || "ws://localhost:3001",
+        accessToken: setupInput.accessToken,
+        enabled: true,
+      };
+
+      if (accountId === DEFAULT_ACCOUNT_ID) {
         return {
-            ...baseSchema,
-            uiHints: {
-                ...(baseSchema.uiHints || {}),
-                maxRetries: {
-                    label: "自动重试次数",
-                    help: "默认 0（关闭）。模型报错或返回空内容时，最多再试几次；次数越大越稳，但等待也会更久。",
-                },
-                retryDelayMs: {
-                    label: "重试间隔（毫秒）",
-                    help: "默认预置 3000ms；仅在自动重试次数大于 0 时生效。",
-                },
-                fastFailErrors: {
-                    label: "快速跳过错误关键词",
-                    help: "默认关闭（空数组）。填写如 401、Unauthorized、余额不足 后，命中时会直接跳过当前模型。",
-                },
-                queueDebounceMs: {
-                    label: "同会话消息合并窗口（毫秒）",
-                    help: "默认 0（关闭）。大于 0 时，短时间连续发来的多条消息会先合并再处理。",
-                },
-                interruptOnNewMessage: {
-                    label: "新消息打断旧回复",
-                    help: "默认关闭。同一会话里来了更新的消息时，可优先切换去处理新消息。",
-                },
-                injectGatewayMeta: {
-                    label: "注入隐藏 QQ 网关上下文",
-                    help: "默认关闭。开启后会给模型注入不可见的会话来源/触发方式等上下文。",
-                },
-                blockStreaming: {
-                    label: "按消息分块发送",
-                    help: "默认开启。推荐保留开启，让 commentary / final 按完整 assistant message 落地，不再只等最后一条最终回复。",
-                },
-                blockStreamingBreak: {
-                    label: "分块发送边界",
-                    help: "默认 message_end。每条 assistant message 完成后再发，更适合 QQ 群聊，也能减少工具调用前后的边界丢失。",
-                },
-                enrichReplyForwardContext: {
-                    label: "解析 reply/forward 多层上下文",
-                    help: "默认开启。会递归展开引用和合并转发内容，方便模型理解‘你在回谁、上下文是什么’。",
-                },
-                forwardLongReplyThreshold: {
-                    label: "长回复转合并转发阈值",
-                    help: "final_answer 大于这个字符数时，自动改用 QQ 合并转发发送。默认 300；commentary 仍按普通消息发送。",
-                },
-                showReplySessionSource: {
-                    label: "回复前标注来源会话",
-                    help: "默认开启。回复前会自动加上 `(from 主会话)` 或 `(from 会话xxx)`，特别适合用了 /会话 之后快速分辨当前回复来自哪个会话。",
-                },
-                keywordOnlyTrigger: {
-                    label: "群聊仅关键词触发",
-                    help: "开启后会忽略 @ 和回复触发；群聊里只有命中关键词才会触发。",
-                },
-                allowBareGroupCommands: {
-                    label: "允许群聊裸 slash 指令",
-                    help: "默认关闭。关闭后，/model 这类群聊指令需要配合关键词触发；如果想恢复旧体验再手动开启。",
-                },
-            },
+          ...next,
+          channels: {
+            ...next.channels,
+            qq: { ...next.channels?.qq, ...newConfig },
+          },
         };
-    })(),
-    config: {
-        listAccountIds: (cfg) => {
-            // @ts-ignore
-            const qq = cfg.channels?.qq;
-            if (!qq) return [];
-            if (qq.accounts) return Object.keys(qq.accounts);
-            return [DEFAULT_ACCOUNT_ID];
+      }
+
+      return {
+        ...next,
+        channels: {
+          ...next.channels,
+          qq: {
+            ...next.channels?.qq,
+            enabled: true,
+            accounts: {
+              ...next.channels?.qq?.accounts,
+              [accountId]: {
+                ...next.channels?.qq?.accounts?.[accountId],
+                ...newConfig,
+              },
+            },
+          },
         },
-        resolveAccount: (cfg, accountId) => {
-            const id = accountId ?? DEFAULT_ACCOUNT_ID;
-            // @ts-ignore
-            const qq = cfg.channels?.qq;
-            const accountConfig = id === DEFAULT_ACCOUNT_ID ? qq : qq?.accounts?.[id];
-            return {
-                accountId: id,
-                name: accountConfig?.name ?? "QQ Default",
-                enabled: true,
-                configured: Boolean(accountConfig?.wsUrl),
-                tokenSource: accountConfig?.accessToken ? "config" : "none",
-                config: accountConfig || {},
-            };
-        },
-        defaultAccountId: () => DEFAULT_ACCOUNT_ID,
-        describeAccount: (acc) => ({
-            accountId: acc.accountId,
-            configured: acc.configured,
-            blockStreaming: acc.config.blockStreaming ?? true,
-            blockStreamingBreak: acc.config.blockStreamingBreak ?? "message_end",
-            forwardLongReplyThreshold: acc.config.forwardLongReplyThreshold ?? 300,
-        }),
+      };
     },
-    directory: {
-        listPeers: async ({ accountId }) => {
-            const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
-            if (!client) return [];
-            try {
-                const friends = await client.getFriendList();
-                return friends.map(f => ({
-                    kind: "user" as const,
-                    id: String(f.user_id),
-                    name: f.remark || f.nickname,
-                    raw: { ...f }
-                }));
-            } catch (e) {
-                return [];
-            }
-        },
-        listGroups: async ({ accountId, cfg }) => {
-            const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
-            if (!client) return [];
-            const list: any[] = [];
+  },
+  gateway: {
+    startAccount: async (ctx) => {
+      const { account, cfg } = ctx;
+      await ensureLegacyQQSessionMigration();
+      const config = account.config;
+      accountConfigs.set(account.accountId, config);
+      const adminIds = [...new Set(parseIdListInput(config.admins as string | number | Array<string | number> | undefined))];
+      const allowedGroupIds = [...new Set(parseIdListInput(config.allowedGroups as string | number | Array<string | number> | undefined))];
+      const blockedUserIds = [...new Set(parseIdListInput(config.blockedUsers as string | number | Array<string | number> | undefined))];
+      const blockedNotifyCooldownMs = Math.max(0, Number(config.blockedNotifyCooldownMs ?? 10000));
 
-            try {
-                const groups = await client.getGroupList();
-                list.push(...groups.map(g => ({
-                    kind: "group" as const,
-                    id: String(g.group_id),
-                    name: g.group_name,
-                    raw: { ...g }
-                })));
-            } catch (e) { }
+      if (!config.wsUrl) throw new Error("QQ: wsUrl is required");
 
-            // @ts-ignore
-            const enableGuilds = cfg?.channels?.qq?.enableGuilds ?? true;
-            if (enableGuilds) {
-                try {
-                    const guilds = await client.getGuildList();
-                    list.push(...guilds.map(g => ({
-                        kind: "channel" as const,
-                        id: `guild:${g.guild_id}`,
-                        name: `[频道] ${g.guild_name}`,
-                        raw: { ...g }
-                    })));
-                } catch (e) { }
-            }
-            return list;
+      const existingLiveClient = clients.get(account.accountId);
+      if (existingLiveClient?.isConnected()) {
+        console.log(`[QQ] Existing live client detected for account ${account.accountId}; skip duplicate start`);
+        await new Promise<void>((resolve) => {
+          if (ctx.abortSignal.aborted) {
+            resolve();
+            return;
+          }
+          ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return;
+      }
+      const accountGen = (accountStartGeneration.get(account.accountId) || 0) + 1;
+      accountStartGeneration.set(account.accountId, accountGen);
+
+      // 1. Prevent multiple clients for the same account
+      const existingSet = allClientsByAccount.get(account.accountId);
+      if (existingSet && existingSet.size > 0) {
+        console.log(`[QQ] Disconnecting ${existingSet.size} stale client(s) for account ${account.accountId}`);
+        for (const stale of existingSet) {
+          try {
+            stale.disconnect();
+          } catch {}
         }
-    },
-    status: {
-        probeAccount: async ({ account, timeoutMs }) => {
-            if (!account.config.wsUrl) return { ok: false, error: "Missing wsUrl" };
+        existingSet.clear();
+      }
+      const existingClient = clients.get(account.accountId);
+      if (existingClient) {
+        console.log(`[QQ] Stopping existing client for account ${account.accountId} before restart`);
+        existingClient.disconnect();
+      }
 
-            const runningClient = clients.get(account.accountId);
-            if (runningClient) {
-                try {
-                    const info = await Promise.race([
-                        runningClient.getLoginInfo(),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error("Probe timeout")), timeoutMs || 5000)),
-                    ]);
-                    const data = info as any;
-                    return {
-                        ok: true,
-                        bot: { id: String(data?.user_id ?? ""), username: data?.nickname },
-                    };
-                } catch (err) {
-                    return { ok: false, error: String(err) };
-                }
+      const client = new OneBotClient({
+        wsUrl: config.wsUrl,
+        accessToken: config.accessToken,
+      });
+
+      const isStaleGeneration = () => accountStartGeneration.get(account.accountId) !== accountGen;
+
+      clients.set(account.accountId, client);
+      registerQQClient(account.accountId, client, config as unknown as Record<string, unknown>);
+      const clientSet = allClientsByAccount.get(account.accountId) || new Set<OneBotClient>();
+      clientSet.add(client);
+      allClientsByAccount.set(account.accountId, clientSet);
+      ensureGlobalProcessedMsgCleanupTimer();
+
+      client.on("connect", async () => {
+        if (isStaleGeneration()) {
+          console.log(`[QQ] Ignore stale client connect for account ${account.accountId} gen=${accountGen}`);
+          client.disconnect();
+          return;
+        }
+        console.log(`[QQ] Connected account ${account.accountId}`);
+        try {
+          const info = await client.getLoginInfo();
+          if (info && info.user_id) client.setSelfId(info.user_id);
+          if (info && info.nickname) console.log(`[QQ] Logged in as: ${info.nickname} (${info.user_id})`);
+          getQQRuntime().channel.activity.record({
+            channel: "qq",
+            accountId: account.accountId,
+            direction: "inbound",
+          });
+        } catch (err) {}
+      });
+
+      client.on("heartbeat", () => {
+        if (isStaleGeneration()) return;
+        getQQRuntime().channel.activity.record({
+          channel: "qq",
+          accountId: account.accountId,
+          direction: "inbound",
+        });
+      });
+
+      client.on("request", (event) => {
+        if (isStaleGeneration()) return;
+        if (config.autoApproveRequests) {
+          if (event.request_type === "friend") client.setFriendAddRequest(event.flag, true);
+          else if (event.request_type === "group") client.setGroupAddRequest(event.flag, event.sub_type, true);
+        }
+      });
+
+      client.on("message", async (event) => {
+        try {
+          if (isStaleGeneration()) return;
+          getQQRuntime().channel.activity.record({
+            channel: "qq",
+            accountId: account.accountId,
+            direction: "inbound",
+          });
+          if (event.post_type === "message") {
+            const rawPreview = typeof event.raw_message === "string" ? event.raw_message.replace(/\s+/g, " ").slice(0, 160) : "";
+            if (rawPreview.includes("/") || rawPreview.includes("临时") || rawPreview.includes("会话")) {
+              console.log(`[QQEVT] inbound type=${event.message_type ?? "-"} group=${event.group_id ?? "-"} user=${event.user_id ?? "-"} msg="${rawPreview}"`);
             }
+          }
+          if (event.post_type === "meta_event") {
+            if (event.meta_event_type === "lifecycle" && event.sub_type === "connect" && event.self_id) client.setSelfId(event.self_id);
+            return;
+          }
 
-            const client = new OneBotClient({
-                wsUrl: account.config.wsUrl,
-                accessToken: account.config.accessToken,
-            });
+          if (event.post_type === "notice" && event.notice_type === "notify" && event.sub_type === "poke") {
+            if (String(event.target_id) === String(client.getSelfId())) {
+              event.post_type = "message";
+              event.message_type = event.group_id ? "group" : "private";
+              event.raw_message = `[动作] 用户戳了你一下`;
+              event.message = [{ type: "text", data: { text: event.raw_message } }];
+            } else return;
+          }
 
-            return new Promise((resolve) => {
-                const timer = setTimeout(() => {
-                    client.disconnect();
-                    resolve({ ok: false, error: "Connection timeout" });
-                }, timeoutMs || 5000);
+          if (event.post_type !== "message") return;
 
-                client.on("connect", async () => {
+          // 2. Dynamic self-message filtering
+          const selfId = client.getSelfId() || event.self_id;
+          if (selfId && String(event.user_id) === String(selfId)) return;
+
+          if (config.enableDeduplication !== false && event.message_id) {
+            const msgIdKey = `${account.accountId}:${event.self_id ?? ""}:${event.message_type ?? ""}:${event.group_id ?? ""}:${event.user_id ?? ""}:${String(event.message_id)}`;
+            if (globalProcessedMsgIds.has(msgIdKey)) return;
+            globalProcessedMsgIds.add(msgIdKey);
+          }
+
+          const isGroup = event.message_type === "group";
+          const isGuild = event.message_type === "guild";
+
+          if (isGuild && !config.enableGuilds) return;
+
+          const userId = event.user_id;
+          const groupId = event.group_id;
+          const guildId = event.guild_id;
+          const channelId = event.channel_id;
+
+          const inboundRawMessage = typeof event.raw_message === "string" ? event.raw_message : "";
+          let text = inboundRawMessage || "";
+          const fileHints: QQInboundAttachmentHint[] = [];
+          const audioHints: QQInboundAttachmentHint[] = [];
+          const imageHints: string[] = [];
+          const imageHintMeta = new Map<string, { fileName?: string; mimeType?: string }>();
+
+          if (Array.isArray(event.message)) {
+            let resolvedText = "";
+            for (const seg of event.message) {
+              if (seg.type === "text") resolvedText += seg.data?.text || "";
+              else if (seg.type === "at") {
+                let name = seg.data?.qq;
+                if (name !== "all" && isGroup) {
+                  const cached = getCachedMemberName(String(groupId), String(name));
+                  if (cached) name = cached;
+                  else {
                     try {
-                        const info = await client.getLoginInfo();
-                        clearTimeout(timer);
-                        client.disconnect();
-                        resolve({
-                            ok: true,
-                            bot: { id: String(info.user_id), username: info.nickname }
-                        });
-                    } catch (e) {
-                        clearTimeout(timer);
-                        client.disconnect();
-                        resolve({ ok: false, error: String(e) });
-                    }
-                });
-
-                client.on("error", (err) => {
-                    clearTimeout(timer);
-                    client.disconnect();
-                    resolve({ ok: false, error: String(err) });
-                });
-
-                client.connect();
-            });
-        },
-        buildAccountSnapshot: ({ account, runtime, probe }) => {
-            return {
-                accountId: account.accountId,
-                name: account.name,
-                enabled: account.enabled,
-                configured: account.configured,
-                running: runtime?.running ?? false,
-                lastStartAt: runtime?.lastStartAt ?? null,
-                lastError: runtime?.lastError ?? null,
-                probe,
-            };
-        }
-    },
-    setup: {
-        resolveAccountId: ({ accountId }) => normalizeAccountId(accountId),
-        applyAccountName: ({ cfg, accountId, name }) =>
-            applyAccountNameToChannelSection({ cfg, channelKey: "qq", accountId, name }),
-        validateInput: ({ input }) => null,
-        applyAccountConfig: ({ cfg, accountId, input }) => {
-            const setupInput = input as QQSetupInput;
-            const namedConfig = applyAccountNameToChannelSection({
-                cfg,
-                channelKey: "qq",
-                accountId,
-                name: setupInput.name,
-            });
-
-            const next = accountId !== DEFAULT_ACCOUNT_ID
-                ? migrateBaseNameToDefaultAccount({ cfg: namedConfig, channelKey: "qq" })
-                : namedConfig;
-
-            const newConfig = {
-                wsUrl: setupInput.wsUrl || setupInput.url || "ws://localhost:3001",
-                accessToken: setupInput.accessToken,
-                enabled: true,
-            };
-
-            if (accountId === DEFAULT_ACCOUNT_ID) {
-                return {
-                    ...next,
-                    channels: {
-                        ...next.channels,
-                        qq: { ...next.channels?.qq, ...newConfig }
-                    }
-                };
-            }
-
-            return {
-                ...next,
-                channels: {
-                    ...next.channels,
-                    qq: {
-                        ...next.channels?.qq,
-                        enabled: true,
-                        accounts: {
-                            ...next.channels?.qq?.accounts,
-                            [accountId]: {
-                                ...next.channels?.qq?.accounts?.[accountId],
-                                ...newConfig
-                            }
-                        }
-                    }
+                      const info = await (client as any).sendWithResponse("get_group_member_info", { group_id: groupId, user_id: name });
+                      name = info?.card || info?.nickname || name;
+                      setCachedMemberName(String(groupId), String(seg.data.qq), name);
+                    } catch (e) {}
+                  }
                 }
-            };
-        }
-    },
-    gateway: {
-        startAccount: async (ctx) => {
-            const { account, cfg } = ctx;
-            await ensureLegacyQQSessionMigration();
-            const config = account.config;
-            accountConfigs.set(account.accountId, config);
-            const adminIds = [...new Set(parseIdListInput(config.admins as string | number | Array<string | number> | undefined))];
-            const allowedGroupIds = [...new Set(parseIdListInput(config.allowedGroups as string | number | Array<string | number> | undefined))];
-            const blockedUserIds = [...new Set(parseIdListInput(config.blockedUsers as string | number | Array<string | number> | undefined))];
-            const blockedNotifyCooldownMs = Math.max(0, Number(config.blockedNotifyCooldownMs ?? 10000));
-
-            if (!config.wsUrl) throw new Error("QQ: wsUrl is required");
-
-            const existingLiveClient = clients.get(account.accountId);
-            if (existingLiveClient?.isConnected()) {
-                console.log(`[QQ] Existing live client detected for account ${account.accountId}; skip duplicate start`);
-                await new Promise<void>((resolve) => {
-                    if (ctx.abortSignal.aborted) {
-                        resolve();
-                        return;
-                    }
-                    ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
-                });
-                return;
-            }
-            const accountGen = (accountStartGeneration.get(account.accountId) || 0) + 1;
-            accountStartGeneration.set(account.accountId, accountGen);
-
-            // 1. Prevent multiple clients for the same account
-            const existingSet = allClientsByAccount.get(account.accountId);
-            if (existingSet && existingSet.size > 0) {
-                console.log(`[QQ] Disconnecting ${existingSet.size} stale client(s) for account ${account.accountId}`);
-                for (const stale of existingSet) {
-                    try { stale.disconnect(); } catch { }
+                resolvedText += ` @${name} `;
+              } else if (seg.type === "record") resolvedText += ` [语音消息]${seg.data?.text ? `(${seg.data.text})` : ""}`;
+              else if (seg.type === "image") {
+                const imageUrl = await resolveOneBotImageUrl(client, seg);
+                if (imageUrl) {
+                  rememberImageHint(imageHints, imageHintMeta, {
+                    url: imageUrl,
+                    fileName: typeof seg.data?.file === "string" ? guessFileName(seg.data.file) : undefined,
+                    mimeType: inferImageMimeType(typeof seg.data?.file === "string" ? seg.data.file : undefined),
+                  });
+                  resolvedText += ` [图片: ${imageUrl}]`;
+                } else {
+                  resolvedText += " [图片]";
                 }
-                existingSet.clear();
-            }
-            const existingClient = clients.get(account.accountId);
-            if (existingClient) {
-                console.log(`[QQ] Stopping existing client for account ${account.accountId} before restart`);
-                existingClient.disconnect();
-            }
-
-            const client = new OneBotClient({
-                wsUrl: config.wsUrl,
-                accessToken: config.accessToken,
-            });
-
-            const isStaleGeneration = () => accountStartGeneration.get(account.accountId) !== accountGen;
-
-            clients.set(account.accountId, client);
-            registerQQClient(account.accountId, client, config as unknown as Record<string, unknown>);
-            const clientSet = allClientsByAccount.get(account.accountId) || new Set<OneBotClient>();
-            clientSet.add(client);
-            allClientsByAccount.set(account.accountId, clientSet);
-            ensureGlobalProcessedMsgCleanupTimer();
-
-            client.on("connect", async () => {
-                if (isStaleGeneration()) {
-                    console.log(`[QQ] Ignore stale client connect for account ${account.accountId} gen=${accountGen}`);
-                    client.disconnect();
-                    return;
-                }
-                console.log(`[QQ] Connected account ${account.accountId}`);
+              } else if (seg.type === "video") resolvedText += " [视频消息]";
+              else if (seg.type === "json") resolvedText += " [卡片消息]";
+              else if (seg.type === "forward" && seg.data?.id) {
                 try {
-                    const info = await client.getLoginInfo();
-                    if (info && info.user_id) client.setSelfId(info.user_id);
-                    if (info && info.nickname) console.log(`[QQ] Logged in as: ${info.nickname} (${info.user_id})`);
-                    getQQRuntime().channel.activity.record({
-                        channel: "qq", accountId: account.accountId, direction: "inbound",
-                    });
-                } catch (err) { }
-            });
-
-            client.on("heartbeat", () => {
-                if (isStaleGeneration()) return;
-                getQQRuntime().channel.activity.record({
-                    channel: "qq",
-                    accountId: account.accountId,
-                    direction: "inbound",
-                });
-            });
-
-            client.on("request", (event) => {
-                if (isStaleGeneration()) return;
-                if (config.autoApproveRequests) {
-                    if (event.request_type === "friend") client.setFriendAddRequest(event.flag, true);
-                    else if (event.request_type === "group") client.setGroupAddRequest(event.flag, event.sub_type, true);
+                  const forwardData = await client.getForwardMsg(seg.data.id);
+                  if (forwardData?.messages) {
+                    resolvedText += "\n[转发聊天记录]:";
+                    for (const m of forwardData.messages.slice(0, 10)) {
+                      resolvedText += `\n${m.sender?.nickname || m.user_id}: ${cleanCQCodes(m.content || m.raw_message)}`;
+                    }
+                  }
+                } catch (e) {}
+              } else if (seg.type === "file") {
+                if (!seg.data?.url && isGroup) {
+                  try {
+                    const info = await (client as any).sendWithResponse("get_group_file_url", { group_id: groupId, file_id: seg.data?.file_id, busid: seg.data?.busid });
+                    if (info?.url) seg.data.url = info.url;
+                  } catch (e) {}
                 }
-            });
+                const fileName = seg.data?.name || seg.data?.file || "未命名";
+                const fileId = seg.data?.file_id ? String(seg.data.file_id) : undefined;
+                const busid = seg.data?.busid !== undefined ? String(seg.data.busid) : undefined;
+                const fileUrl = typeof seg.data?.url === "string" ? seg.data.url : undefined;
+                const fileSize = typeof seg.data?.file_size === "number" ? seg.data.file_size : undefined;
+                fileHints.push({
+                  kind: "file",
+                  name: fileName,
+                  ...(fileUrl ? { url: fileUrl } : {}),
+                  ...(fileId ? { fileId } : {}),
+                  ...(busid ? { busid } : {}),
+                  ...(fileSize !== undefined ? { size: fileSize } : {}),
+                });
+                const shortHint = fileUrl ? ` [文件: ${fileName}, 下载=${fileUrl}]` : fileId ? ` [文件: ${fileName}, file_id=${fileId}${busid ? `, busid=${busid}` : ""}]` : ` [文件: ${fileName}]`;
+                resolvedText += shortHint;
+              }
+            }
+            if (resolvedText) text = resolvedText;
+          }
 
-            client.on("message", async (event) => {
-                try {
-                    if (isStaleGeneration()) return;
-                    getQQRuntime().channel.activity.record({
-                        channel: "qq",
-                        accountId: account.accountId,
-                        direction: "inbound",
-                    });
-                    if (event.post_type === "message") {
-                        const rawPreview = typeof event.raw_message === "string"
-                            ? event.raw_message.replace(/\s+/g, " ").slice(0, 160)
-                            : "";
-                        if (rawPreview.includes("/") || rawPreview.includes("临时") || rawPreview.includes("会话")) {
-                            console.log(
-                                `[QQEVT] inbound type=${event.message_type ?? "-"} group=${event.group_id ?? "-"} user=${event.user_id ?? "-"} msg="${rawPreview}"`
-                            );
-                        }
-                    }
-                    if (event.post_type === "meta_event") {
-                        if (event.meta_event_type === "lifecycle" && event.sub_type === "connect" && event.self_id) client.setSelfId(event.self_id);
-                        return;
-                    }
+          if (blockedUserIds.includes(userId)) return;
+          if (isGroup && allowedGroupIds.length && !allowedGroupIds.includes(groupId)) return;
 
-                    if (event.post_type === "notice" && event.notice_type === "notify" && event.sub_type === "poke") {
-                        if (String(event.target_id) === String(client.getSelfId())) {
-                            event.post_type = "message";
-                            event.message_type = event.group_id ? "group" : "private";
-                            event.raw_message = `[动作] 用户戳了你一下`;
-                            event.message = [{ type: "text", data: { text: event.raw_message } }];
-                        } else return;
-                    }
+          const isAdmin = adminIds.includes(userId);
+          await ensureTempSessionSlotsLoaded();
+          const threadSessionKey = buildTempThreadKey(account.accountId, isGroup, isGuild, groupId, guildId, channelId, userId);
+          let activeTempSlot = getTempSessionSlot(threadSessionKey);
+          const extractedTextFromSegments = Array.isArray(event.message)
+            ? event.message
+                .filter((seg) => seg?.type === "text")
+                .map((seg) => String(seg.data?.text || ""))
+                .join(" ")
+                .trim()
+            : "";
+          const keywordTriggers = parseKeywordTriggersInput(config.keywordTriggers as string | string[] | undefined);
+          // Some OneBot variants may not emit text segments for plain messages.
+          // Fall back to already-normalized text to avoid losing slash commands.
+          const commandTextCandidate = normalizeSlashVariants(extractedTextFromSegments || text.trim());
+          const extractedInlineCommand = extractLeadingInlineCommand(commandTextCandidate, keywordTriggers);
+          const inlineCommand = extractedInlineCommand.command;
+          if (inlineCommand) {
+            const shortInline = inlineCommand.replace(/\s+/g, " ").slice(0, 160);
+            console.log(`[QQCMD] inbound user=${userId} group=${groupId ?? "-"} admin=${isAdmin} cmd="${shortInline}"`);
+          }
+          const normalizedCommandKey = inlineCommand
+            ? `${account.accountId}:${event.message_type ?? ""}:${String(groupId ?? "")}:${String(guildId ?? "")}:${String(channelId ?? "")}:${String(userId ?? "")}:${inlineCommand.replace(/\s+/g, " ").toLowerCase()}`
+            : "";
+          const hasKeywordTriggerInCommandText = extractedInlineCommand.keywordPrefixed;
+          const allowBareGroupCommands = config.allowBareGroupCommands === true;
+          const allowGroupInlineCommand = !isGroup || allowBareGroupCommands || hasKeywordTriggerInCommandText;
+          const bareInlineCommandOnly = Boolean(inlineCommand) && extractedInlineCommand.bareCommand;
+          if (normalizedCommandKey && markAndCheckRecentCommandDuplicate(normalizedCommandKey)) {
+            console.log(`[QQ] dropped duplicate command key=${normalizedCommandKey}`);
+            return;
+          }
+          if (isGroup && inlineCommand && !allowGroupInlineCommand && bareInlineCommandOnly) {
+            const shortInline = inlineCommand.replace(/\s+/g, " ").slice(0, 160);
+            console.log(`[QQCMD] ignored bare group command without keyword user=${userId} group=${groupId ?? "-"} cmd="${shortInline}"`);
+            return;
+          }
 
-                    if (event.post_type !== "message") return;
+          let forceTriggered = false;
+          if (inlineCommand && (!isGroup || allowGroupInlineCommand)) {
+            text = inlineCommand;
+            forceTriggered = true;
+          }
+          if (isGroup && /^\/models\b/i.test(inlineCommand)) {
+            if (!isAdmin) return;
+          } else if (isGroup && /^\/model\b/i.test(inlineCommand)) {
+            if (!isAdmin) return;
+          } else if (isGroup && /^\/newsession\b/i.test(inlineCommand)) {
+            if (!isAdmin) return;
+            text = "/newsession";
+          } else if (
+            isGroup &&
+            /^\/(会话重命名|临时重命名|tmprename|会话结束|临时结束|tmpend|会话列表|临时列表|tmplist|会话状态|临时状态|tmpstatus|退出会话|退出临时|exittemp|会话|临时|tmp)(?=\s|$)/i.test(inlineCommand)
+          ) {
+            if (!isAdmin) {
+              console.warn(`[QQCMD] session command denied: non-admin user=${userId} group=${groupId ?? "-"}`);
+              if (config.notifyNonAdminBlocked) {
+                client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] 当前仅管理员可使用会话命令。`);
+              }
+              return;
+            }
+            text = inlineCommand;
+            console.log(`[QQCMD] session command accepted user=${userId} group=${groupId ?? "-"}`);
+          } else if (isGroup && /^\/grok_draw\b/i.test(inlineCommand)) {
+            if (!isAdmin) return;
+            text = inlineCommand;
+          } else if (isGroup && /^\/modelsync\b/i.test(inlineCommand)) {
+            if (!isAdmin) return;
+            text = "/modelsync";
+          }
 
-                    // 2. Dynamic self-message filtering
-                    const selfId = client.getSelfId() || event.self_id;
-                    if (selfId && String(event.user_id) === String(selfId)) return;
+          const normalizedTextForCommand = normalizeSlashVariants(text).trim();
+          const allowLocalSlashCommandExecution = !isGroup || forceTriggered || allowBareGroupCommands;
+          if (!isGuild && isAdmin && normalizedTextForCommand.startsWith("/") && allowLocalSlashCommandExecution) {
+            const parts = normalizedTextForCommand.split(/\s+/);
+            const cmd = parts[0];
+            const baseFromIdForCommand = isGroup ? String(groupId) : isGuild ? `guild:${guildId}:${channelId}` : String(userId);
 
-                    if (config.enableDeduplication !== false && event.message_id) {
-                        const msgIdKey = `${account.accountId}:${event.self_id ?? ""}:${event.message_type ?? ""}:${event.group_id ?? ""}:${event.user_id ?? ""}:${String(event.message_id)}`;
-                        if (globalProcessedMsgIds.has(msgIdKey)) return;
-                        globalProcessedMsgIds.add(msgIdKey);
-                    }
-
-                    const isGroup = event.message_type === "group";
-                    const isGuild = event.message_type === "guild";
-
-                    if (isGuild && !config.enableGuilds) return;
-
-                    const userId = event.user_id;
-                    const groupId = event.group_id;
-                    const guildId = event.guild_id;
-                    const channelId = event.channel_id;
-
-                    const inboundRawMessage = typeof event.raw_message === "string" ? event.raw_message : "";
-                    let text = inboundRawMessage || "";
-                    const fileHints: QQInboundAttachmentHint[] = [];
-                    const audioHints: QQInboundAttachmentHint[] = [];
-                    const imageHints: string[] = [];
-                    const imageHintMeta = new Map<string, { fileName?: string; mimeType?: string }>();
-
-                    if (Array.isArray(event.message)) {
-                        let resolvedText = "";
-                        for (const seg of event.message) {
-                            if (seg.type === "text") resolvedText += seg.data?.text || "";
-                            else if (seg.type === "at") {
-                                let name = seg.data?.qq;
-                                if (name !== "all" && isGroup) {
-                                    const cached = getCachedMemberName(String(groupId), String(name));
-                                    if (cached) name = cached;
-                                    else {
-                                        try {
-                                            const info = await (client as any).sendWithResponse("get_group_member_info", { group_id: groupId, user_id: name });
-                                            name = info?.card || info?.nickname || name;
-                                            setCachedMemberName(String(groupId), String(seg.data.qq), name);
-                                        } catch (e) { }
-                                    }
-                                }
-                                resolvedText += ` @${name} `;
-                            } else if (seg.type === "record") resolvedText += ` [语音消息]${seg.data?.text ? `(${seg.data.text})` : ""}`;
-                            else if (seg.type === "image") {
-                                const imageUrl = await resolveOneBotImageUrl(client, seg);
-                                if (imageUrl) {
-                                    rememberImageHint(imageHints, imageHintMeta, {
-                                        url: imageUrl,
-                                        fileName: typeof seg.data?.file === "string" ? guessFileName(seg.data.file) : undefined,
-                                        mimeType: inferImageMimeType(typeof seg.data?.file === "string" ? seg.data.file : undefined),
-                                    });
-                                    resolvedText += ` [图片: ${imageUrl}]`;
-                                } else {
-                                    resolvedText += " [图片]";
-                                }
-                            }
-                            else if (seg.type === "video") resolvedText += " [视频消息]";
-                            else if (seg.type === "json") resolvedText += " [卡片消息]";
-                            else if (seg.type === "forward" && seg.data?.id) {
-                                try {
-                                    const forwardData = await client.getForwardMsg(seg.data.id);
-                                    if (forwardData?.messages) {
-                                        resolvedText += "\n[转发聊天记录]:";
-                                        for (const m of forwardData.messages.slice(0, 10)) {
-                                            resolvedText += `\n${m.sender?.nickname || m.user_id}: ${cleanCQCodes(m.content || m.raw_message)}`;
-                                        }
-                                    }
-                                } catch (e) { }
-                            } else if (seg.type === "file") {
-                                if (!seg.data?.url && isGroup) {
-                                    try {
-                                        const info = await (client as any).sendWithResponse("get_group_file_url", { group_id: groupId, file_id: seg.data?.file_id, busid: seg.data?.busid });
-                                        if (info?.url) seg.data.url = info.url;
-                                    } catch (e) { }
-                                }
-                                const fileName = seg.data?.name || seg.data?.file || "未命名";
-                                const fileId = seg.data?.file_id ? String(seg.data.file_id) : undefined;
-                                const busid = seg.data?.busid !== undefined ? String(seg.data.busid) : undefined;
-                                const fileUrl = typeof seg.data?.url === "string" ? seg.data.url : undefined;
-                                const fileSize = typeof seg.data?.file_size === "number" ? seg.data.file_size : undefined;
-                                fileHints.push({
-                                    kind: "file",
-                                    name: fileName,
-                                    ...(fileUrl ? { url: fileUrl } : {}),
-                                    ...(fileId ? { fileId } : {}),
-                                    ...(busid ? { busid } : {}),
-                                    ...(fileSize !== undefined ? { size: fileSize } : {}),
-                                });
-                                const shortHint = fileUrl
-                                    ? ` [文件: ${fileName}, 下载=${fileUrl}]`
-                                    : fileId
-                                        ? ` [文件: ${fileName}, file_id=${fileId}${busid ? `, busid=${busid}` : ""}]`
-                                        : ` [文件: ${fileName}]`;
-                                resolvedText += shortHint;
-                            }
-                        }
-                        if (resolvedText) text = resolvedText;
-                    }
-
-                    if (blockedUserIds.includes(userId)) return;
-                    if (isGroup && allowedGroupIds.length && !allowedGroupIds.includes(groupId)) return;
-
-                    const isAdmin = adminIds.includes(userId);
-                    await ensureTempSessionSlotsLoaded();
-                    const threadSessionKey = buildTempThreadKey(account.accountId, isGroup, isGuild, groupId, guildId, channelId, userId);
-                    let activeTempSlot = getTempSessionSlot(threadSessionKey);
-                    const extractedTextFromSegments = Array.isArray(event.message)
-                        ? event.message
-                            .filter((seg) => seg?.type === "text")
-                            .map((seg) => String(seg.data?.text || ""))
-                            .join(" ")
-                            .trim()
-                        : "";
-                    const keywordTriggers = parseKeywordTriggersInput(config.keywordTriggers as string | string[] | undefined);
-                    // Some OneBot variants may not emit text segments for plain messages.
-                    // Fall back to already-normalized text to avoid losing slash commands.
-                    const commandTextCandidate = normalizeSlashVariants(extractedTextFromSegments || text.trim());
-                    const extractedInlineCommand = extractLeadingInlineCommand(commandTextCandidate, keywordTriggers);
-                    const inlineCommand = extractedInlineCommand.command;
-                    if (inlineCommand) {
-                        const shortInline = inlineCommand.replace(/\s+/g, " ").slice(0, 160);
-                        console.log(`[QQCMD] inbound user=${userId} group=${groupId ?? "-"} admin=${isAdmin} cmd="${shortInline}"`);
-                    }
-                    const normalizedCommandKey = inlineCommand
-                        ? `${account.accountId}:${event.message_type ?? ""}:${String(groupId ?? "")}:${String(guildId ?? "")}:${String(channelId ?? "")}:${String(userId ?? "")}:${inlineCommand.replace(/\s+/g, " ").toLowerCase()}`
-                        : "";
-                    const hasKeywordTriggerInCommandText = extractedInlineCommand.keywordPrefixed;
-                    const allowBareGroupCommands = config.allowBareGroupCommands === true;
-                    const allowGroupInlineCommand = !isGroup || allowBareGroupCommands || hasKeywordTriggerInCommandText;
-                    const bareInlineCommandOnly = Boolean(inlineCommand) && extractedInlineCommand.bareCommand;
-                    if (normalizedCommandKey && markAndCheckRecentCommandDuplicate(normalizedCommandKey)) {
-                        console.log(`[QQ] dropped duplicate command key=${normalizedCommandKey}`);
-                        return;
-                    }
-                    if (isGroup && inlineCommand && !allowGroupInlineCommand && bareInlineCommandOnly) {
-                        const shortInline = inlineCommand.replace(/\s+/g, " ").slice(0, 160);
-                        console.log(`[QQCMD] ignored bare group command without keyword user=${userId} group=${groupId ?? "-"} cmd="${shortInline}"`);
-                        return;
-                    }
-
-                    let forceTriggered = false;
-                    if (inlineCommand && (!isGroup || allowGroupInlineCommand)) {
-                        text = inlineCommand;
-                        forceTriggered = true;
-                    }
-                    if (isGroup && /^\/models\b/i.test(inlineCommand)) {
-                        if (!isAdmin) return;
-                    } else if (isGroup && /^\/model\b/i.test(inlineCommand)) {
-                        if (!isAdmin) return;
-                    } else if (isGroup && /^\/newsession\b/i.test(inlineCommand)) {
-                        if (!isAdmin) return;
-                        text = "/newsession";
-                    }
-                    else if (isGroup && /^\/(会话重命名|临时重命名|tmprename|会话结束|临时结束|tmpend|会话列表|临时列表|tmplist|会话状态|临时状态|tmpstatus|退出会话|退出临时|exittemp|会话|临时|tmp)(?=\s|$)/i.test(inlineCommand)) {
-                        if (!isAdmin) {
-                            console.warn(`[QQCMD] session command denied: non-admin user=${userId} group=${groupId ?? "-"}`);
-                            if (config.notifyNonAdminBlocked) {
-                                client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] 当前仅管理员可使用会话命令。`);
-                            }
-                            return;
-                        }
-                        text = inlineCommand;
-                        console.log(`[QQCMD] session command accepted user=${userId} group=${groupId ?? "-"}`);
-                    }
-                    else if (isGroup && /^\/grok_draw\b/i.test(inlineCommand)) {
-                        if (!isAdmin) return;
-                        text = inlineCommand;
-                    }
-                    else if (isGroup && /^\/modelsync\b/i.test(inlineCommand)) {
-                        if (!isAdmin) return;
-                        text = "/modelsync";
-                    }
-
-                    const normalizedTextForCommand = normalizeSlashVariants(text).trim();
-                    const allowLocalSlashCommandExecution = !isGroup || forceTriggered || allowBareGroupCommands;
-                    if (!isGuild && isAdmin && normalizedTextForCommand.startsWith('/') && allowLocalSlashCommandExecution) {
-                        const parts = normalizedTextForCommand.split(/\s+/);
-                        const cmd = parts[0];
-                        const baseFromIdForCommand = isGroup
-                            ? String(groupId)
-                            : isGuild
-                                ? `guild:${guildId}:${channelId}`
-                                : String(userId);
-
-                        if (cmd === '/会话' || cmd === '/临时' || cmd === '/tmp') {
-                            const rawArg = parts.slice(1).join(' ').trim();
-                            if (!rawArg) {
-                                const current = activeTempSlot
-                                    ? `当前会话: ${activeTempSlot}`
-                                    : "当前会话: 默认会话";
-                                const usage = `[OpenClawd QQ]
+            if (cmd === "/会话" || cmd === "/临时" || cmd === "/tmp") {
+              const rawArg = parts.slice(1).join(" ").trim();
+              if (!rawArg) {
+                const current = activeTempSlot ? `当前会话: ${activeTempSlot}` : "当前会话: 默认会话";
+                const usage = `[OpenClawd QQ]
 ${current}
 用法:
 /会话 <名称> 新建或进入会话
@@ -3069,236 +2934,238 @@ ${current}
 /会话状态 查看当前会话
 /会话列表 查看已有会话
 /会话结束 结束当前会话`;
-                                if (isGroup) client.sendGroupMsg(groupId, usage); else client.sendPrivateMsg(userId, usage);
-                                return;
-                            }
-                            if (/^\d+$/.test(rawArg)) {
-                                const requestedIndex = Number(rawArg);
-                                const selectedTarget = resolveSessionCommandTargetByIndex(threadSessionKey, requestedIndex);
-                                if (!selectedTarget) {
-                                    const maxIndex = listSessionCommandTargets(threadSessionKey).length;
-                                    const msg = `[OpenClawd QQ]\n未找到序号 ${requestedIndex} 对应的会话。\n当前可用序号：1-${maxIndex}\n可先用 /会话列表 查看。`;
-                                    if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                                    return;
-                                }
-                                const isAlreadyActive = selectedTarget.slot
-                                    ? selectedTarget.slot === activeTempSlot
-                                    : !activeTempSlot;
-                                if (isAlreadyActive) {
-                                    const msg = `[OpenClawd QQ]\n当前已在${selectedTarget.slot ? `会话: ${selectedTarget.label}` : "默认会话"}。`;
-                                    if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                                    return;
-                                }
-                                await setTempSessionSlot(threadSessionKey, selectedTarget.slot);
-                                activeTempSlot = selectedTarget.slot;
-                                const msg = selectedTarget.slot
-                                    ? `[OpenClawd QQ]\n✅ 已切换到会话: ${selectedTarget.label}`
-                                    : `[OpenClawd QQ]\n✅ 已切换到默认会话。`;
-                                if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                                return;
-                            }
-                            const requested = sanitizeTempSlotName(rawArg);
-                            if (!requested) {
-                                const msg = `[OpenClawd QQ]\n会话名称不能为空。\n用法：/会话 <名称>`;
-                                if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                                return;
-                            }
-                            await setTempSessionSlot(threadSessionKey, requested);
-                            activeTempSlot = requested;
-                            const msg = `[OpenClawd QQ]
+                if (isGroup) client.sendGroupMsg(groupId, usage);
+                else client.sendPrivateMsg(userId, usage);
+                return;
+              }
+              if (/^\d+$/.test(rawArg)) {
+                const requestedIndex = Number(rawArg);
+                const selectedTarget = resolveSessionCommandTargetByIndex(threadSessionKey, requestedIndex);
+                if (!selectedTarget) {
+                  const maxIndex = listSessionCommandTargets(threadSessionKey).length;
+                  const msg = `[OpenClawd QQ]\n未找到序号 ${requestedIndex} 对应的会话。\n当前可用序号：1-${maxIndex}\n可先用 /会话列表 查看。`;
+                  if (isGroup) client.sendGroupMsg(groupId, msg);
+                  else client.sendPrivateMsg(userId, msg);
+                  return;
+                }
+                const isAlreadyActive = selectedTarget.slot ? selectedTarget.slot === activeTempSlot : !activeTempSlot;
+                if (isAlreadyActive) {
+                  const msg = `[OpenClawd QQ]\n当前已在${selectedTarget.slot ? `会话: ${selectedTarget.label}` : "默认会话"}。`;
+                  if (isGroup) client.sendGroupMsg(groupId, msg);
+                  else client.sendPrivateMsg(userId, msg);
+                  return;
+                }
+                await setTempSessionSlot(threadSessionKey, selectedTarget.slot);
+                activeTempSlot = selectedTarget.slot;
+                const msg = selectedTarget.slot ? `[OpenClawd QQ]\n✅ 已切换到会话: ${selectedTarget.label}` : `[OpenClawd QQ]\n✅ 已切换到默认会话。`;
+                if (isGroup) client.sendGroupMsg(groupId, msg);
+                else client.sendPrivateMsg(userId, msg);
+                return;
+              }
+              const requested = sanitizeTempSlotName(rawArg);
+              if (!requested) {
+                const msg = `[OpenClawd QQ]\n会话名称不能为空。\n用法：/会话 <名称>`;
+                if (isGroup) client.sendGroupMsg(groupId, msg);
+                else client.sendPrivateMsg(userId, msg);
+                return;
+              }
+              await setTempSessionSlot(threadSessionKey, requested);
+              activeTempSlot = requested;
+              const msg = `[OpenClawd QQ]
 ✅ 已进入会话: ${requested}
 后续消息将写入该会话，不占用默认会话。\n可用命令：/会话状态 /会话列表 /会话重命名 /退出会话 /会话结束`;
-                            if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                            return;
-                        }
+              if (isGroup) client.sendGroupMsg(groupId, msg);
+              else client.sendPrivateMsg(userId, msg);
+              return;
+            }
 
-                        if (cmd === '/会话重命名' || cmd === '/临时重命名' || cmd === '/tmprename') {
-                            if (!activeTempSlot) {
-                                const msg = `[OpenClawd QQ]\n当前在默认会话中，无法重命名。\n先用 /会话 <名称> 进入命名会话。`;
-                                if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                                return;
-                            }
-                            const renamed = sanitizeTempSlotName(parts.slice(1).join(' '));
-                            if (!renamed) {
-                                const msg = `[OpenClawd QQ]\n用法：/会话重命名 <新名称>`;
-                                if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                                return;
-                            }
-                            const oldName = activeTempSlot;
-                            await setTempSessionSlot(threadSessionKey, renamed);
-                            activeTempSlot = renamed;
-                            const msg = `[OpenClawd QQ]\n✅ 会话已重命名：${oldName} -> ${renamed}`;
-                            if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                            return;
-                        }
+            if (cmd === "/会话重命名" || cmd === "/临时重命名" || cmd === "/tmprename") {
+              if (!activeTempSlot) {
+                const msg = `[OpenClawd QQ]\n当前在默认会话中，无法重命名。\n先用 /会话 <名称> 进入命名会话。`;
+                if (isGroup) client.sendGroupMsg(groupId, msg);
+                else client.sendPrivateMsg(userId, msg);
+                return;
+              }
+              const renamed = sanitizeTempSlotName(parts.slice(1).join(" "));
+              if (!renamed) {
+                const msg = `[OpenClawd QQ]\n用法：/会话重命名 <新名称>`;
+                if (isGroup) client.sendGroupMsg(groupId, msg);
+                else client.sendPrivateMsg(userId, msg);
+                return;
+              }
+              const oldName = activeTempSlot;
+              await setTempSessionSlot(threadSessionKey, renamed);
+              activeTempSlot = renamed;
+              const msg = `[OpenClawd QQ]\n✅ 会话已重命名：${oldName} -> ${renamed}`;
+              if (isGroup) client.sendGroupMsg(groupId, msg);
+              else client.sendPrivateMsg(userId, msg);
+              return;
+            }
 
-                        if (cmd === '/退出会话' || cmd === '/退出临时' || cmd === '/exittemp') {
-                            if (!activeTempSlot) {
-                                const msg = `[OpenClawd QQ]
+            if (cmd === "/退出会话" || cmd === "/退出临时" || cmd === "/exittemp") {
+              if (!activeTempSlot) {
+                const msg = `[OpenClawd QQ]
 当前已在默认会话中。`;
-                                if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                                return;
-                            }
-                            const prev = activeTempSlot;
-                            await setTempSessionSlot(threadSessionKey, null);
-                            activeTempSlot = null;
-                            const msg = `[OpenClawd QQ]
+                if (isGroup) client.sendGroupMsg(groupId, msg);
+                else client.sendPrivateMsg(userId, msg);
+                return;
+              }
+              const prev = activeTempSlot;
+              await setTempSessionSlot(threadSessionKey, null);
+              activeTempSlot = null;
+              const msg = `[OpenClawd QQ]
 ✅ 已退出会话: ${prev}
 当前已回到默认会话。`;
-                            if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                            return;
-                        }
+              if (isGroup) client.sendGroupMsg(groupId, msg);
+              else client.sendPrivateMsg(userId, msg);
+              return;
+            }
 
-                        if (cmd === '/会话状态' || cmd === '/临时状态' || cmd === '/tmpstatus') {
-                            const effective = buildEffectiveFromId(baseFromIdForCommand, activeTempSlot);
-                            const msg = `[OpenClawd QQ]
-当前会话: ${activeTempSlot ? `会话(${activeTempSlot})` : '默认会话'}
+            if (cmd === "/会话状态" || cmd === "/临时状态" || cmd === "/tmpstatus") {
+              const effective = buildEffectiveFromId(baseFromIdForCommand, activeTempSlot);
+              const msg = `[OpenClawd QQ]
+当前会话: ${activeTempSlot ? `会话(${activeTempSlot})` : "默认会话"}
 会话键ID: ${effective}`;
-                            if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                            return;
-                        }
+              if (isGroup) client.sendGroupMsg(groupId, msg);
+              else client.sendPrivateMsg(userId, msg);
+              return;
+            }
 
-                        if (cmd === '/会话列表' || cmd === '/临时列表' || cmd === '/tmplist') {
-                            await reloadTempSessionStateFromDisk();
-                            activeTempSlot = getTempSessionSlot(threadSessionKey);
-                            const slots = getTempSessionHistory(threadSessionKey);
-                            console.log(`[QQ] /会话列表 thread=${threadSessionKey} slots=${slots.length}`);
-                            try {
-                                const rawState = await fs.readFile(TEMP_SESSION_STATE_FILE, "utf-8");
-                                const parsedState = JSON.parse(rawState) as TempSessionState;
-                                const diskSlots = Array.isArray(parsedState?.history?.[threadSessionKey])
-                                    ? parsedState.history![threadSessionKey]!.length
-                                    : 0;
-                                console.error(`[QQDBG] /会话列表 thread=${threadSessionKey} mem=${slots.length} disk=${diskSlots}`);
-                            } catch (err) {
-                                console.error(`[QQDBG] /会话列表 read-state-failed thread=${threadSessionKey} err=${String(err)}`);
-                            }
-                            const rendered = renderSessionCommandTargetList(threadSessionKey, activeTempSlot);
-                            const msg = `[OpenClawd QQ]\n会话列表：\n${rendered}\n使用 /会话 <名称> 新建或进入，/会话 <序号> 切换`;
-                            if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                            return;
-                        }
+            if (cmd === "/会话列表" || cmd === "/临时列表" || cmd === "/tmplist") {
+              await reloadTempSessionStateFromDisk();
+              activeTempSlot = getTempSessionSlot(threadSessionKey);
+              const slots = getTempSessionHistory(threadSessionKey);
+              console.log(`[QQ] /会话列表 thread=${threadSessionKey} slots=${slots.length}`);
+              try {
+                const rawState = await fs.readFile(TEMP_SESSION_STATE_FILE, "utf-8");
+                const parsedState = JSON.parse(rawState) as TempSessionState;
+                const diskSlots = Array.isArray(parsedState?.history?.[threadSessionKey]) ? parsedState.history![threadSessionKey]!.length : 0;
+                console.error(`[QQDBG] /会话列表 thread=${threadSessionKey} mem=${slots.length} disk=${diskSlots}`);
+              } catch (err) {
+                console.error(`[QQDBG] /会话列表 read-state-failed thread=${threadSessionKey} err=${String(err)}`);
+              }
+              const rendered = renderSessionCommandTargetList(threadSessionKey, activeTempSlot);
+              const msg = `[OpenClawd QQ]\n会话列表：\n${rendered}\n使用 /会话 <名称> 新建或进入，/会话 <序号> 切换`;
+              if (isGroup) client.sendGroupMsg(groupId, msg);
+              else client.sendPrivateMsg(userId, msg);
+              return;
+            }
 
-                        if (cmd === '/会话结束' || cmd === '/临时结束' || cmd === '/tmpend') {
-                            if (!activeTempSlot) {
-                                const msg = `[OpenClawd QQ]
+            if (cmd === "/会话结束" || cmd === "/临时结束" || cmd === "/tmpend") {
+              if (!activeTempSlot) {
+                const msg = `[OpenClawd QQ]
 当前在默认会话中，默认会话无需结束。`;
-                                if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                                return;
-                            }
-                            const runtimeForEnd = getQQRuntime();
-                            const tempFromId = buildEffectiveFromId(baseFromIdForCommand, activeTempSlot);
-                            const routeForEnd = runtimeForEnd.channel.routing.resolveAgentRoute({
-                                cfg,
-                                channel: "qq",
-                                accountId: account.accountId,
-                                peer: {
-                                    kind: isGuild ? "channel" : (isGroup ? "group" : "direct"),
-                                    id: tempFromId,
-                                },
-                            });
-                            const storePathForEnd = runtimeForEnd.channel.session.resolveStorePath(cfg.session?.store, { agentId: routeForEnd.agentId });
-                            await resetSessionByKey(storePathForEnd, routeForEnd.sessionKey);
-                            await setTempSessionSlot(threadSessionKey, null);
-                            const msg = `[OpenClawd QQ]
+                if (isGroup) client.sendGroupMsg(groupId, msg);
+                else client.sendPrivateMsg(userId, msg);
+                return;
+              }
+              const runtimeForEnd = getQQRuntime();
+              const tempFromId = buildEffectiveFromId(baseFromIdForCommand, activeTempSlot);
+              const routeForEnd = runtimeForEnd.channel.routing.resolveAgentRoute({
+                cfg,
+                channel: "qq",
+                accountId: account.accountId,
+                peer: {
+                  kind: isGuild ? "channel" : isGroup ? "group" : "direct",
+                  id: tempFromId,
+                },
+              });
+              const storePathForEnd = runtimeForEnd.channel.session.resolveStorePath(cfg.session?.store, { agentId: routeForEnd.agentId });
+              await resetSessionByKey(storePathForEnd, routeForEnd.sessionKey);
+              await setTempSessionSlot(threadSessionKey, null);
+              const msg = `[OpenClawd QQ]
 ✅ 会话 ${activeTempSlot} 已结束并清空，已回到默认会话。`;
-                            activeTempSlot = null;
-                            if (isGroup) client.sendGroupMsg(groupId, msg); else client.sendPrivateMsg(userId, msg);
-                            return;
-                        }
-                        if (cmd === '/models' || (cmd === '/model' && (!parts[1] || /^list$/i.test(parts[1])))) {
-                            const dynamicModelCatalogEnabled = config.enableDynamicModelCatalog === true;
-                            console.log(`[QQCMD] local model catalog user=${userId} group=${groupId ?? "-"} dynamic=${String(dynamicModelCatalogEnabled)}`);
-                            const catalog = await buildModelCatalogText(dynamicModelCatalogEnabled);
-                            if (isGroup) {
-                                const sentAsForward = await sendLongTextAsForwardMessage({
-                                    client,
-                                    groupId,
-                                    text: catalog,
-                                    nodeName: (config.forwardNodeName || "OpenClaw").trim() || "OpenClaw",
-                                    nodeUin: String(client.getSelfId() || userId),
-                                    nodeCharLimit: 0,
-                                });
-                                if (sentAsForward) return;
-                            }
-                            const chunks = splitLongText(catalog, 2800);
-                            for (const chunk of chunks) {
-                                if (isGroup) client.sendGroupMsg(groupId, chunk);
-                                else client.sendPrivateMsg(userId, chunk);
-                                if (config.rateLimitMs > 0) await sleep(Math.min(config.rateLimitMs, 800));
-                            }
-                            return;
-                        }
-                        if (cmd === '/modelsync') {
-                            const startMsg = `[OpenClawd QQ]\n开始同步模型 allowlist（来源：provider /models）...`;
-                            if (isGroup) client.sendGroupMsg(groupId, startMsg);
-                            else client.sendPrivateMsg(userId, startMsg);
-                            const syncResult = await runModelSyncScript();
-                            const prefix = syncResult.ok ? "✅" : "❌";
-                            const restartHint = syncResult.ok
-                                ? `\n\n⚠️ 注意：allowlist 已写入配置，但需要执行 \`openclaw gateway restart\` 后才会生效。`
-                                : "";
-                            const output = `[OpenClawd QQ]\n${prefix} /modelsync ${syncResult.ok ? "完成" : "失败"}\n${syncResult.text}${restartHint}`;
-                            const chunks = splitLongText(output, 2800);
-                            for (const chunk of chunks) {
-                                if (isGroup) client.sendGroupMsg(groupId, chunk);
-                                else client.sendPrivateMsg(userId, chunk);
-                                if (config.rateLimitMs > 0) await sleep(Math.min(config.rateLimitMs, 800));
-                            }
-                            return;
-                        }
-                        if (cmd === '/newsession') {
-                            const runtimeForReset = getQQRuntime();
-                            const baseFromIdForReset = isGroup
-                                ? String(groupId)
-                                : isGuild
-                                    ? `guild:${guildId}:${channelId}`
-                                    : String(userId);
-                            const fromIdForReset = buildEffectiveFromId(baseFromIdForReset, activeTempSlot);
-                            const routeForReset = runtimeForReset.channel.routing.resolveAgentRoute({
-                                cfg,
-                                channel: "qq",
-                                accountId: account.accountId,
-                                peer: {
-                                    kind: isGuild ? "channel" : (isGroup ? "group" : "direct"),
-                                    id: fromIdForReset,
-                                },
-                            });
-                            const storePath = runtimeForReset.channel.session.resolveStorePath(cfg.session?.store, { agentId: routeForReset.agentId });
-                            const resetOk = await resetSessionByKey(storePath, routeForReset.sessionKey);
-                            const notice = resetOk
-                                ? "✅ 当前会话已重置。请继续发送你的问题。"
-                                : "ℹ️ 当前会话本就为空，已为你准备新会话。";
-                            if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${notice}`);
-                            else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, notice);
-                            else client.sendPrivateMsg(userId, notice);
-                            return;
-                        }
-                        if (cmd === '/grok_draw') {
-                            const prompt = text.trim().slice('/grok_draw'.length).trim();
-                            console.log(`[QQ] direct command hit: /grok_draw prompt_len=${prompt.length} group=${groupId || "-"} user=${userId}`);
-                            const draw = await grokDrawDirect(prompt);
-                            if (draw.ok === false) {
-                                const fail = `[OpenClawd QQ]\n❌ ${draw.error}`;
-                                if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${fail}`);
-                                else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, fail);
-                                else client.sendPrivateMsg(userId, fail);
-                                return;
-                            }
-                            const okMsg = `[CQ:image,file=${draw.url}]`;
-                            if (isGroup) client.sendGroupMsg(groupId, okMsg);
-                            else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, okMsg);
-                            else client.sendPrivateMsg(userId, okMsg);
-                            return;
-                        }
-                        if (cmd === '/status') {
-                            const activeCount = countActiveTasksForAccount(account.accountId);
-                            const statusMsg = `[OpenClawd QQ]\nState: Connected\nSelf ID: ${client.getSelfId()}\nMemory: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB\nActiveTasks: ${activeCount}`;
-                            if (isGroup) client.sendGroupMsg(groupId, statusMsg); else client.sendPrivateMsg(userId, statusMsg);
-                            return;
-                        }
-                        if (cmd === '/help') {
-                            const helpMsg = `[OpenClawd QQ]
+              activeTempSlot = null;
+              if (isGroup) client.sendGroupMsg(groupId, msg);
+              else client.sendPrivateMsg(userId, msg);
+              return;
+            }
+            if (cmd === "/models" || (cmd === "/model" && (!parts[1] || /^list$/i.test(parts[1])))) {
+              const dynamicModelCatalogEnabled = config.enableDynamicModelCatalog === true;
+              console.log(`[QQCMD] local model catalog user=${userId} group=${groupId ?? "-"} dynamic=${String(dynamicModelCatalogEnabled)}`);
+              const catalog = await buildModelCatalogText(dynamicModelCatalogEnabled);
+              if (isGroup) {
+                const sentAsForward = await sendLongTextAsForwardMessage({
+                  client,
+                  groupId,
+                  text: catalog,
+                  nodeName: (config.forwardNodeName || "OpenClaw").trim() || "OpenClaw",
+                  nodeUin: String(client.getSelfId() || userId),
+                  nodeCharLimit: 0,
+                });
+                if (sentAsForward) return;
+              }
+              const chunks = splitLongText(catalog, 2800);
+              for (const chunk of chunks) {
+                if (isGroup) client.sendGroupMsg(groupId, chunk);
+                else client.sendPrivateMsg(userId, chunk);
+                if (config.rateLimitMs > 0) await sleep(Math.min(config.rateLimitMs, 800));
+              }
+              return;
+            }
+            if (cmd === "/modelsync") {
+              const startMsg = `[OpenClawd QQ]\n开始同步模型 allowlist（来源：provider /models）...`;
+              if (isGroup) client.sendGroupMsg(groupId, startMsg);
+              else client.sendPrivateMsg(userId, startMsg);
+              const syncResult = await runModelSyncScript();
+              const prefix = syncResult.ok ? "✅" : "❌";
+              const restartHint = syncResult.ok ? `\n\n⚠️ 注意：allowlist 已写入配置，但需要执行 \`openclaw gateway restart\` 后才会生效。` : "";
+              const output = `[OpenClawd QQ]\n${prefix} /modelsync ${syncResult.ok ? "完成" : "失败"}\n${syncResult.text}${restartHint}`;
+              const chunks = splitLongText(output, 2800);
+              for (const chunk of chunks) {
+                if (isGroup) client.sendGroupMsg(groupId, chunk);
+                else client.sendPrivateMsg(userId, chunk);
+                if (config.rateLimitMs > 0) await sleep(Math.min(config.rateLimitMs, 800));
+              }
+              return;
+            }
+            if (cmd === "/newsession") {
+              const runtimeForReset = getQQRuntime();
+              const baseFromIdForReset = isGroup ? String(groupId) : isGuild ? `guild:${guildId}:${channelId}` : String(userId);
+              const fromIdForReset = buildEffectiveFromId(baseFromIdForReset, activeTempSlot);
+              const routeForReset = runtimeForReset.channel.routing.resolveAgentRoute({
+                cfg,
+                channel: "qq",
+                accountId: account.accountId,
+                peer: {
+                  kind: isGuild ? "channel" : isGroup ? "group" : "direct",
+                  id: fromIdForReset,
+                },
+              });
+              const storePath = runtimeForReset.channel.session.resolveStorePath(cfg.session?.store, { agentId: routeForReset.agentId });
+              const resetOk = await resetSessionByKey(storePath, routeForReset.sessionKey);
+              const notice = resetOk ? "✅ 当前会话已重置。请继续发送你的问题。" : "ℹ️ 当前会话本就为空，已为你准备新会话。";
+              if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${notice}`);
+              else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, notice);
+              else client.sendPrivateMsg(userId, notice);
+              return;
+            }
+            if (cmd === "/grok_draw") {
+              const prompt = text.trim().slice("/grok_draw".length).trim();
+              console.log(`[QQ] direct command hit: /grok_draw prompt_len=${prompt.length} group=${groupId || "-"} user=${userId}`);
+              const draw = await grokDrawDirect(prompt);
+              if (draw.ok === false) {
+                const fail = `[OpenClawd QQ]\n❌ ${draw.error}`;
+                if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${fail}`);
+                else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, fail);
+                else client.sendPrivateMsg(userId, fail);
+                return;
+              }
+              const okMsg = `[CQ:image,file=${draw.url}]`;
+              if (isGroup) client.sendGroupMsg(groupId, okMsg);
+              else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, okMsg);
+              else client.sendPrivateMsg(userId, okMsg);
+              return;
+            }
+            if (cmd === "/status") {
+              const activeCount = countActiveTasksForAccount(account.accountId);
+              const statusMsg = `[OpenClawd QQ]\nState: Connected\nSelf ID: ${client.getSelfId()}\nMemory: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB\nActiveTasks: ${activeCount}`;
+              if (isGroup) client.sendGroupMsg(groupId, statusMsg);
+              else client.sendPrivateMsg(userId, statusMsg);
+              return;
+            }
+            if (cmd === "/help") {
+              const helpMsg = `[OpenClawd QQ]
 /status - 状态
 /会话 <名称> - 新建或进入会话
 /会话 <序号> - 切换到已有会话
@@ -3312,1095 +3179,1060 @@ ${current}
 /mute @用户 [分] - 禁言
 /kick @用户 - 踢出
 /help - 帮助`;
-                            if (isGroup) client.sendGroupMsg(groupId, helpMsg); else client.sendPrivateMsg(userId, helpMsg);
-                            return;
-                        }
-                        if (isGroup && (cmd === '/mute' || cmd === '/ban')) {
-                            const targetMatch = text.match(/\[CQ:at,qq=(\d+)\]/);
-                            const targetId = targetMatch ? parseInt(targetMatch[1]) : (parts[1] ? parseInt(parts[1]) : null);
-                            if (targetId) {
-                                client.setGroupBan(groupId, targetId, parts[2] ? parseInt(parts[2]) * 60 : 1800);
-                                client.sendGroupMsg(groupId, `已禁言。`);
-                            }
-                            return;
-                        }
-                        if (isGroup && cmd === '/kick') {
-                            const targetMatch = text.match(/\[CQ:at,qq=(\d+)\]/);
-                            const targetId = targetMatch ? parseInt(targetMatch[1]) : (parts[1] ? parseInt(parts[1]) : null);
-                            if (targetId) {
-                                client.setGroupKick(groupId, targetId);
-                                client.sendGroupMsg(groupId, `已踢出。`);
-                            }
-                            return;
-                        }
-                    }
+              if (isGroup) client.sendGroupMsg(groupId, helpMsg);
+              else client.sendPrivateMsg(userId, helpMsg);
+              return;
+            }
+            if (isGroup && (cmd === "/mute" || cmd === "/ban")) {
+              const targetMatch = text.match(/\[CQ:at,qq=(\d+)\]/);
+              const targetId = targetMatch ? parseInt(targetMatch[1]) : parts[1] ? parseInt(parts[1]) : null;
+              if (targetId) {
+                client.setGroupBan(groupId, targetId, parts[2] ? parseInt(parts[2]) * 60 : 1800);
+                client.sendGroupMsg(groupId, `已禁言。`);
+              }
+              return;
+            }
+            if (isGroup && cmd === "/kick") {
+              const targetMatch = text.match(/\[CQ:at,qq=(\d+)\]/);
+              const targetId = targetMatch ? parseInt(targetMatch[1]) : parts[1] ? parseInt(parts[1]) : null;
+              if (targetId) {
+                client.setGroupKick(groupId, targetId);
+                client.sendGroupMsg(groupId, `已踢出。`);
+              }
+              return;
+            }
+          }
 
-                    let repliedMsg: any = null;
-                    const replyMsgId = getReplyMessageId(event.message, inboundRawMessage, event);
-                    if (config.debugLayerTrace) {
-                        const segTypes = Array.isArray(event.message)
-                            ? event.message.map((seg) => String(seg?.type || "?")).join(",")
-                            : typeof event.message;
-                        const inboundForwardIds = collectForwardIdsFromCandidates(event.message, inboundRawMessage);
-                        console.log(
-                            `[QQLayerTrace] inbound segTypes=${segTypes} rawHasReply=${String(/\[CQ:reply[,]/.test(inboundRawMessage))} rawHasForward=${String(/\[CQ:(?:forward|forward_msg|nodes)[,\]]/.test(inboundRawMessage))} replyMsgId=${replyMsgId || ""} forwardIds=${inboundForwardIds.join(",")}`
-                        );
-                    }
-                    if (replyMsgId) {
-                        try { repliedMsg = await client.getMsg(replyMsgId); } catch (err) { }
-                    }
-
-                    if (repliedMsg) {
-                        try {
-                            await hydrateOneBotMessageMedia(client, Array.isArray(repliedMsg.message) ? repliedMsg.message : undefined, {
-                                groupId: repliedMsg?.group_id ?? groupId,
-                            });
-                            const replyImageHints = extractImageHints(Array.isArray(repliedMsg.message) ? repliedMsg.message : repliedMsg.raw_message, 5);
-                            for (const hint of replyImageHints) {
-                                rememberImageHint(imageHints, imageHintMeta, hint);
-                            }
-                        } catch { }
-                    }
-
-                    if (fileHints.length === 0 && repliedMsg) {
-                        try {
-                            const replySegments = Array.isArray(repliedMsg.message) ? repliedMsg.message : [];
-                            for (const seg of replySegments) {
-                                if (seg?.type !== "file") continue;
-                                if (!seg.data?.url && isGroup && seg.data?.file_id) {
-                                    try {
-                                        const info = await (client as any).sendWithResponse("get_group_file_url", {
-                                            group_id: groupId,
-                                            file_id: seg.data.file_id,
-                                            busid: seg.data.busid,
-                                        });
-                                        if (info?.url) seg.data.url = info.url;
-                                    } catch { }
-                                }
-                                const fileName = seg.data?.name || seg.data?.file || "未命名";
-                                const fileId = seg.data?.file_id ? String(seg.data.file_id) : undefined;
-                                const busid = seg.data?.busid !== undefined ? String(seg.data.busid) : undefined;
-                                const fileUrl = typeof seg.data?.url === "string" ? seg.data.url : undefined;
-                                const fileSize = typeof seg.data?.file_size === "number" ? seg.data.file_size : undefined;
-                                fileHints.push({
-                                    kind: "file",
-                                    name: fileName,
-                                    ...(fileUrl ? { url: fileUrl } : {}),
-                                    ...(fileId ? { fileId } : {}),
-                                    ...(busid ? { busid } : {}),
-                                    ...(fileSize !== undefined ? { size: fileSize } : {}),
-                                });
-                            }
-
-                            if (fileHints.length === 0 && typeof repliedMsg.raw_message === "string") {
-                                const raw = repliedMsg.raw_message;
-                                const fileNameMatch = raw.match(/\[文件[:：]?\s*([^\]]+)\]/);
-                                if (fileNameMatch) {
-                                    fileHints.push({ kind: "file", name: fileNameMatch[1].trim() || "未命名" });
-                                }
-                            }
-                        } catch { }
-                    }
-
-                    let historyContext = "";
-                    if (isGroup && config.historyLimit !== 0) {
-                        try {
-                            const history = await client.getGroupMsgHistory(groupId);
-                            if (history?.messages) {
-                                const limit = config.historyLimit || 5;
-                                historyContext = history.messages.slice(-(limit + 1), -1).map((m: any) => `${m.sender?.nickname || m.user_id}: ${cleanCQCodes(m.raw_message || "")}`).join("\n");
-                            }
-                        } catch (e) { }
-                    }
-
-                    const keywordOnlyTrigger = Boolean(config.keywordOnlyTrigger) && isGroup;
-                    let isTriggered = forceTriggered || !isGroup || text.includes("[动作] 用户戳了你一下");
-                    let keywordTriggered = false;
-                    if (!isTriggered && keywordTriggers.length > 0) {
-                        for (const kw of keywordTriggers) {
-                            if (text.includes(kw)) {
-                                isTriggered = true;
-                                keywordTriggered = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    let mentionedByAt = false;
-                    let mentionedByReply = false;
-
-                    const checkMention = isGroup || isGuild;
-                    if (keywordOnlyTrigger && !isTriggered) return;
-                    if (checkMention && config.requireMention && !keywordOnlyTrigger && !isTriggered) {
-                        const selfId = client.getSelfId();
-                        const effectiveSelfId = selfId ?? event.self_id;
-                        if (!effectiveSelfId) return;
-                        if (Array.isArray(event.message)) {
-                            for (const s of event.message) {
-                                if (s.type === "at" && (String(s.data?.qq) === String(effectiveSelfId) || s.data?.qq === "all")) {
-                                    mentionedByAt = true;
-                                    break;
-                                }
-                            }
-                        } else if (text.includes(`[CQ:at,qq=${effectiveSelfId}]`)) {
-                            mentionedByAt = true;
-                        }
-                        if (!mentionedByAt && repliedMsg?.sender?.user_id === effectiveSelfId) {
-                            mentionedByReply = true;
-                        }
-                        if (!mentionedByAt && !mentionedByReply) return;
-                    }
-
-                    if (config.adminOnlyChat && !isAdmin) {
-                        if (config.notifyNonAdminBlocked) {
-                            const shouldNotifyBlocked = !isGroup && !isGuild ? true : (isTriggered || mentionedByAt);
-                            if (!shouldNotifyBlocked) return;
-                            const now = Date.now();
-                            const targetKey = isGroup
-                                ? `g:${groupId}:u:${userId}`
-                                : isGuild
-                                    ? `guild:${guildId}:${channelId}:u:${userId}`
-                                    : `dm:${userId}`;
-                            const cacheKey = `${account.accountId}:${targetKey}`;
-                            const lastNotifyAt = blockedNotifyCache.get(cacheKey) ?? 0;
-                            if (blockedNotifyCooldownMs > 0 && now - lastNotifyAt < blockedNotifyCooldownMs) return;
-                            blockedNotifyCache.set(cacheKey, now);
-                            const msg = (config.nonAdminBlockedMessage || "当前仅管理员可触发机器人。\n如需使用请联系管理员。").trim();
-                            if (msg) {
-                                if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${msg}`);
-                                else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, msg);
-                                else client.sendPrivateMsg(userId, msg);
-                            }
-                        }
-                        return;
-                    }
-
-                    let baseFromId = String(userId);
-                    let conversationLabel = `QQ User ${userId}`;
-                    if (isGroup) {
-                        baseFromId = String(groupId);
-                        const cachedGroupName = getCachedGroupName(account.accountId, String(groupId));
-                        let resolvedGroupName = cachedGroupName || "";
-                        if (!resolvedGroupName) {
-                            try {
-                                const groupInfo = await client.getGroupInfo(groupId);
-                                const groupName = typeof groupInfo?.group_name === "string"
-                                    ? groupInfo.group_name.trim()
-                                    : (typeof groupInfo?.data?.group_name === "string" ? groupInfo.data.group_name.trim() : "");
-                                if (groupName) {
-                                    resolvedGroupName = groupName;
-                                    setCachedGroupName(account.accountId, String(groupId), groupName);
-                                }
-                            } catch (err) {
-                                console.warn(`[QQ] Failed to resolve group name for ${groupId}: ${String(err)}`);
-                            }
-                        }
-                        conversationLabel = resolvedGroupName ? `QQ Group "${resolvedGroupName}"` : `QQ Group ${groupId}`;
-                    } else if (isGuild) {
-                        baseFromId = `guild:${guildId}:${channelId}`;
-                        conversationLabel = `QQ Guild ${guildId} Channel ${channelId}`;
-                    }
-                    const fromId = buildEffectiveFromId(baseFromId, activeTempSlot);
-                    const deliveryTo = buildEffectiveFromId(
-                        isGroup
-                            ? `group:${String(groupId)}`
-                            : isGuild
-                                ? `guild:${String(guildId)}:${String(channelId)}`
-                                : `user:${String(userId)}`,
-                        activeTempSlot,
-                    );
-                    const sessionLabel = buildQQSessionLabel({
-                        isGroup,
-                        isGuild,
-                        groupId,
-                        guildId,
-                        channelId,
-                        userId,
-                        activeTempSlot,
-                        timestampMs: event.time * 1000,
-                        text,
-                    });
-
-                    const runtime = getQQRuntime();
-                    const route = runtime.channel.routing.resolveAgentRoute({
-                        cfg,
-                        channel: "qq",
-                        accountId: account.accountId,
-                        peer: {
-                            kind: isGuild ? "channel" : (isGroup ? "group" : "direct"),
-                            id: fromId,
-                        },
-                    });
-
-                    let deliveredAnything = false;
-                    let dispatcherError: any = null;
-                    let currentRunState: { isStale: () => boolean } | null = null;
-                    const forwardThreshold = Number(config.forwardLongReplyThreshold ?? 0);
-                    const canUseMergedForward = isGroup && Number.isFinite(forwardThreshold) && forwardThreshold > 0;
-                    const unknownBlockBoundaryThreshold = Number.isFinite(forwardThreshold) && forwardThreshold > 0 ? forwardThreshold : 300;
-                    const unknownBlockMergeWindowMs = 350;
-                    const bufferedFinalTexts: string[] = [];
-                    let bufferedFinalTotalChars = 0;
-                    const bufferedUnknownTexts: string[] = [];
-                    let bufferedUnknownTotalChars = 0;
-                    let bufferedUnknownLastAt = 0;
-                    let unknownFlushTimer: ReturnType<typeof setTimeout> | null = null;
-                    let unknownFlushVersion = 0;
-                    let pendingReplySessionSourcePrefix = config.showReplySessionSource
-                        ? buildReplySessionSourcePrefix(activeTempSlot)
-                        : "";
-
-                    const takeReplySessionSourcePrefix = (): string => {
-                        if (!pendingReplySessionSourcePrefix) return "";
-                        const prefix = pendingReplySessionSourcePrefix;
-                        pendingReplySessionSourcePrefix = "";
-                        return prefix;
-                    };
-
-                    const sendSessionSourcePrefixOnly = async (): Promise<boolean> => {
-                        const prefix = takeReplySessionSourcePrefix();
-                        if (!prefix || currentRunState?.isStale()) return false;
-                        if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${prefix}`);
-                        else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, prefix);
-                        else client.sendPrivateMsg(userId, prefix);
-                        return true;
-                    };
-
-                    const resetBufferedFinalTexts = () => {
-                        bufferedFinalTexts.length = 0;
-                        bufferedFinalTotalChars = 0;
-                    };
-
-                    const clearUnknownFlushTimer = () => {
-                        if (!unknownFlushTimer) return;
-                        clearTimeout(unknownFlushTimer);
-                        unknownFlushTimer = null;
-                    };
-
-                    const resetBufferedUnknownTexts = () => {
-                        clearUnknownFlushTimer();
-                        bufferedUnknownTexts.length = 0;
-                        bufferedUnknownTotalChars = 0;
-                        bufferedUnknownLastAt = 0;
-                        unknownFlushVersion += 1;
-                    };
-
-                    const prepareOutgoingText = async (msg: string): Promise<string> => {
-                        let processed = msg;
-                        const sessionPrefix = takeReplySessionSourcePrefix();
-                        if (sessionPrefix) {
-                            processed = processed.trim()
-                                ? `${sessionPrefix}\n${processed}`
-                                : sessionPrefix;
-                        }
-                        if (config.formatMarkdown) processed = stripMarkdown(processed);
-                        if (config.antiRiskMode) processed = processAntiRisk(processed);
-                        return await resolveInlineCqRecord(processed);
-                    };
-
-                    const sendProcessedText = async (processed: string): Promise<boolean> => {
-                        if (currentRunState?.isStale()) return false;
-                        const chunks = splitMessage(processed, config.maxMessageLength || 4000);
-                        for (let i = 0; i < chunks.length; i++) {
-                            if (currentRunState?.isStale()) return i > 0;
-                            let chunk = chunks[i];
-                            if (isGroup && i === 0) chunk = `[CQ:at,qq=${userId}] ${chunk}`;
-
-                            if (isGroup) client.sendGroupMsg(groupId, chunk);
-                            else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, chunk);
-                            else client.sendPrivateMsg(userId, chunk);
-
-                            if (!isGuild && config.enableTTS && i === 0 && chunk.length < 100) {
-                                const tts = chunk.replace(/\[CQ:.*?\]/g, "").trim();
-                                if (tts) {
-                                    if (isGroup) client.sendGroupMsg(groupId, `[CQ:tts,text=${tts}]`);
-                                    else client.sendPrivateMsg(userId, `[CQ:tts,text=${tts}]`);
-                                }
-                            }
-
-                            if (chunks.length > 1 && config.rateLimitMs > 0) await sleep(config.rateLimitMs);
-                        }
-                        return chunks.length > 0;
-                    };
-
-                    const flushTextBatch = async (
-                        texts: string[],
-                        totalLen: number,
-                        meta: { phaseLabel: string; reason?: string },
-                    ): Promise<boolean> => {
-                        if (currentRunState?.isStale() || texts.length === 0) return false;
-                        if (canUseMergedForward && totalLen >= forwardThreshold) {
-                            const sentAsForward = await sendLongTextAsForwardMessage({
-                                client,
-                                groupId,
-                                texts,
-                                nodeName: (config.forwardNodeName || "OpenClaw").trim() || "OpenClaw",
-                                nodeUin: String(client.getSelfId() || userId),
-                                nodeCharLimit: Number(config.forwardNodeCharLimit ?? 0),
-                            });
-                            if (currentRunState?.isStale()) return false;
-                            if (sentAsForward) {
-                                console.log(`[QQ] merged-forward delivered phase=${meta.phaseLabel} blocks=${texts.length} len=${totalLen} threshold=${forwardThreshold} group=${groupId}${meta.reason ? ` reason=${meta.reason}` : ""}`);
-                                return true;
-                            }
-                            console.warn(`[QQ] merged-forward failed, fallback to plain chunks phase=${meta.phaseLabel} blocks=${texts.length} len=${totalLen} threshold=${forwardThreshold} group=${groupId}${meta.reason ? ` reason=${meta.reason}` : ""}`);
-                        }
-
-                        let sentAnything = false;
-                        for (const textItem of texts) {
-                            const sent = await sendProcessedText(textItem);
-                            if (sent) sentAnything = true;
-                        }
-                        if (sentAnything && meta.phaseLabel === "unknown") {
-                            console.log(`[QQ] plain-text delivered phase=unknown blocks=${texts.length} len=${totalLen} group=${groupId}${meta.reason ? ` reason=${meta.reason}` : ""}`);
-                        }
-                        return sentAnything;
-                    };
-
-                    const flushBufferedFinalTexts = async (): Promise<boolean> => {
-                        if (currentRunState?.isStale() || bufferedFinalTexts.length === 0) return false;
-                        const texts = [...bufferedFinalTexts];
-                        const totalLen = bufferedFinalTotalChars;
-                        resetBufferedFinalTexts();
-                        return await flushTextBatch(texts, totalLen, { phaseLabel: "final_answer" });
-                    };
-
-                    const flushBufferedUnknownTexts = async (reason: string): Promise<boolean> => {
-                        if (currentRunState?.isStale() || bufferedUnknownTexts.length === 0) return false;
-                        const texts = [...bufferedUnknownTexts];
-                        const totalLen = bufferedUnknownTotalChars;
-                        resetBufferedUnknownTexts();
-                        return await flushTextBatch(texts, totalLen, { phaseLabel: "unknown", reason });
-                    };
-
-                    const scheduleUnknownFlush = () => {
-                        if (bufferedUnknownTexts.length === 0) return;
-                        clearUnknownFlushTimer();
-                        const version = ++unknownFlushVersion;
-                        unknownFlushTimer = setTimeout(() => {
-                            if (version !== unknownFlushVersion) return;
-                            void (async () => {
-                                const flushed = await flushBufferedUnknownTexts("debounce");
-                                if (flushed) deliveredAnything = true;
-                            })();
-                        }, unknownBlockMergeWindowMs);
-                    };
-
-                    const bufferUnknownBlockText = async (processed: string): Promise<void> => {
-                        const now = Date.now();
-                        const gapMs = bufferedUnknownLastAt > 0 ? now - bufferedUnknownLastAt : 0;
-                        const shouldSplitShortThenLong = bufferedUnknownTexts.length > 0 &&
-                            bufferedUnknownTotalChars > 0 &&
-                            bufferedUnknownTotalChars < unknownBlockBoundaryThreshold &&
-                            processed.length >= unknownBlockBoundaryThreshold;
-                        if (bufferedUnknownTexts.length > 0 && (gapMs > unknownBlockMergeWindowMs || shouldSplitShortThenLong)) {
-                            const flushed = await flushBufferedUnknownTexts(gapMs > unknownBlockMergeWindowMs ? `gap_${gapMs}` : "short_then_long");
-                            if (flushed) deliveredAnything = true;
-                        }
-
-                        bufferedUnknownTexts.push(processed);
-                        bufferedUnknownTotalChars += processed.length;
-                        bufferedUnknownLastAt = now;
-                        if (config.debugLayerTrace) {
-                            console.log(`[QQLayerTrace] unknown block buffered blocks=${bufferedUnknownTexts.length} total=${bufferedUnknownTotalChars} last=${processed.length}`);
-                        }
-                        scheduleUnknownFlush();
-                    };
-
-                    const deliver = async (payload: any, info?: { kind?: string }) => {
-                        if (currentRunState?.isStale()) return;
-                        const isTextFailure = payload.text && (
-                            payload.text.includes("Agent failed before reply:") ||
-                            payload.text.includes("Context overflow") ||
-                            payload.text.includes("Message ordering conflict")
-                        );
-
-                        if (payload.isError || isTextFailure) {
-                            dispatcherError = new Error(payload.text || "API Error");
-                            return;
-                        }
-                        const phase = resolveReplyPayloadPhase(payload);
-                        if (config.debugLayerTrace && payload.text && payload.text.trim()) {
-                            console.log(`[QQLayerTrace] outbound text kind=${info?.kind || "unknown"} phase=${phase || "unknown"} len=${payload.text.length}`);
-                        }
-                        if (payload.text && payload.text.trim()) {
-                            const processed = await prepareOutgoingText(payload.text);
-                            if (currentRunState?.isStale()) return;
-                            if (processed.trim()) {
-                                const isUnknownBlockText = !phase && info?.kind === "block";
-                                if (isUnknownBlockText) {
-                                    const flushedBufferedFinal = await flushBufferedFinalTexts();
-                                    if (flushedBufferedFinal) deliveredAnything = true;
-                                    await bufferUnknownBlockText(processed);
-                                } else {
-                                    const flushedBufferedUnknown = await flushBufferedUnknownTexts(`before_${phase || info?.kind || "text"}`);
-                                    if (flushedBufferedUnknown) deliveredAnything = true;
-                                    const shouldBufferKnownFinal = canUseMergedForward && (
-                                        phase === "final_answer" ||
-                                        (!phase && info?.kind === "final")
-                                    );
-                                    if (shouldBufferKnownFinal) {
-                                        bufferedFinalTexts.push(processed);
-                                        bufferedFinalTotalChars += processed.length;
-                                    } else {
-                                        const flushedBufferedText = await flushBufferedFinalTexts();
-                                        if (flushedBufferedText) deliveredAnything = true;
-                                        const sentText = await sendProcessedText(processed);
-                                        if (sentText) deliveredAnything = true;
-                                    }
-                                }
-                            }
-                        }
-                        if (payload.files) {
-                            const flushedUnknownText = await flushBufferedUnknownTexts("before_files");
-                            if (flushedUnknownText) deliveredAnything = true;
-                            const flushedBufferedText = await flushBufferedFinalTexts();
-                            if (flushedBufferedText) deliveredAnything = true;
-                            if (!payload.text && pendingReplySessionSourcePrefix) {
-                                const sentPrefix = await sendSessionSourcePrefixOnly();
-                                if (sentPrefix) deliveredAnything = true;
-                            }
-                            for (const f of payload.files) {
-                                if (currentRunState?.isStale()) return;
-                                if (f.url) {
-                                    const url = await resolveMediaUrl(f.url);
-                                    if (currentRunState?.isStale()) return;
-                                    if (isImageFile(url)) {
-                                        const imgMsg = `[CQ:image,file=${url}]`;
-                                        if (isGroup) client.sendGroupMsg(groupId, imgMsg);
-                                        else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, imgMsg);
-                                        else client.sendPrivateMsg(userId, imgMsg);
-                                    } else if (isAudioFile(url) || isAudioFile(f.url)) {
-                                        const audioMsg = `[CQ:record,file=${url}]`;
-                                        if (isGroup) client.sendGroupMsg(groupId, audioMsg);
-                                        else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, `[语音] ${url}`);
-                                        else client.sendPrivateMsg(userId, audioMsg);
-                                    } else {
-                                        const txtMsg = `[CQ:file,file=${url},name=${f.name || 'file'}]`;
-                                        if (isGroup) client.sendGroupMsg(groupId, txtMsg);
-                                        else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, `[文件] ${url}`);
-                                        else client.sendPrivateMsg(userId, txtMsg);
-                                    }
-                                    deliveredAnything = true;
-                                    if (config.rateLimitMs > 0) await sleep(config.rateLimitMs);
-                                }
-                            }
-                        }
-                    };
-
-                    let replyToBody = "";
-                    let replyToSender = "";
-                    if (replyMsgId && repliedMsg) {
-                        replyToBody = cleanCQCodes(typeof repliedMsg.message === 'string' ? repliedMsg.message : repliedMsg.raw_message || '');
-                        replyToSender = repliedMsg.sender?.nickname || repliedMsg.sender?.card || String(repliedMsg.sender?.user_id || '');
-                    }
-
-                    const replySuffix = replyToBody ? `\n\n[Replying to ${replyToSender || "unknown"}]\n${replyToBody}\n[/Replying]` : "";
-                    let bodyWithReply = cleanCQCodes(text) + replySuffix;
-                    let systemBlock = "";
-                    if (config.injectGatewayMeta !== false) {
-                        systemBlock += buildQQHiddenMetaBlock({
-                            accountId: account.accountId,
-                            userId,
-                            isGroup,
-                            isGuild,
-                            groupId,
-                            guildId,
-                            channelId,
-                            conversationLabel,
-                            sessionLabel,
-                            senderName: event.sender?.nickname || event.sender?.card || "Unknown",
-                            senderRole: event.sender?.role,
-                            isAdmin,
-                            activeTempSlot,
-                            mentionedByAt,
-                            mentionedByReply,
-                            keywordTriggered,
-                        });
-                    }
-                    if (config.systemPrompt) systemBlock += `<system>${config.systemPrompt}</system>\n\n`;
-                    if (historyContext) systemBlock += `<history>\n${historyContext}\n</history>\n\n`;
-                    if (config.debugLayerTrace) {
-                        console.log(`[QQLayerTrace] invoke buildReplyForwardContextBlock enrich=${String(config.enrichReplyForwardContext)} debug=${String(config.debugLayerTrace)} hasReply=${String(Boolean(repliedMsg))}`);
-                    }
-                    const layeredContext = await buildReplyForwardContextBlock({
-                        client,
-                        rootEvent: event,
-                        repliedMsg,
-                        cfg: config,
-                    });
-                    if (config.debugLayerTrace) {
-                        console.log(`[QQLayerTrace] blockLen=${layeredContext.block.length} imageCount=${layeredContext.imageUrls.length}`);
-                    }
-                    if (layeredContext.block) systemBlock += layeredContext.block;
-                    if (fileHints.length > 0 || imageHints.length > 0) {
-                        systemBlock += `<attachments>\n`;
-                        for (const hint of fileHints) {
-                            const parts = [`name=${hint.name}`];
-                            if (hint.url) parts.push(`url=${hint.url}`);
-                            if (hint.fileId) parts.push(`file_id=${hint.fileId}`);
-                            if (hint.busid) parts.push(`busid=${hint.busid}`);
-                            if (hint.size !== undefined) parts.push(`size=${hint.size}`);
-                            systemBlock += `- qq_file ${parts.join(" ")}\n`;
-                        }
-                        for (const imageUrl of imageHints.slice(0, 5)) {
-                            systemBlock += `- qq_image url=${imageUrl}\n`;
-                        }
-                        systemBlock += `</attachments>\n\n`;
-                    }
-                    bodyWithReply = systemBlock + bodyWithReply;
-
-                    const inboundMediaUrls = Array.from(new Set([
-                        ...extractImageUrls(event.message),
-                        ...imageHints,
-                        ...layeredContext.imageUrls,
-                    ])).slice(0, 5);
-                    const cachedInboundImages = config.cacheInboundImagesToLocal !== false
-                        ? await cacheImageHintsLocally(inboundMediaUrls, imageHintMeta)
-                        : { entries: inboundMediaUrls.map((url) => ({ url, type: imageHintMeta.get(url)?.mimeType ?? inferImageMimeType(url) ?? DEFAULT_QQ_IMAGE_MIME })), failures: [] as Array<{ url: string; error: string }> };
-                    const inboundMediaPayload = buildInboundMediaPayloadFromEntries(cachedInboundImages.entries);
-                    if (config.debugLayerTrace) {
-                        const mediaPathCount = Array.isArray((inboundMediaPayload as any).MediaPaths)
-                            ? (inboundMediaPayload as any).MediaPaths.length
-                            : ((inboundMediaPayload as any).MediaPath ? 1 : 0);
-                        const mediaUrlCount = Array.isArray((inboundMediaPayload as any).MediaUrls)
-                            ? (inboundMediaPayload as any).MediaUrls.length
-                            : ((inboundMediaPayload as any).MediaUrl ? 1 : 0);
-                        console.log(
-                            `[QQLayerTrace] inbound media urls=${inboundMediaUrls.length} ctxUrls=${mediaUrlCount} ctxPaths=${mediaPathCount} cacheFailures=${cachedInboundImages.failures.length}`
-                        );
-                        if (cachedInboundImages.failures.length > 0) {
-                            console.warn(
-                                `[QQLayerTrace] inbound media cache failed urls=${cachedInboundImages.failures.map((item) => `${item.url} err=${item.error}`).join(" | ")}`
-                            );
-                        }
-                    }
-
-                    const shouldComputeCommandAuthorized = runtime.channel.commands.shouldComputeCommandAuthorized(text, cfg);
-                    const commandAuthorized = shouldComputeCommandAuthorized ? isAdmin : true;
-                    const ctxPayload = runtime.channel.reply.finalizeInboundContext({
-                        Provider: "qq", Channel: "qq", From: fromId, To: "qq:bot", Body: bodyWithReply, RawBody: text,
-                        SenderId: String(userId), SenderName: event.sender?.nickname || "Unknown", ConversationLabel: conversationLabel, ThreadLabel: sessionLabel,
-                        SessionKey: route.sessionKey, AccountId: route.accountId, ChatType: isGroup ? "group" : isGuild ? "channel" : "direct", Timestamp: event.time * 1000,
-                        Surface: "qq",
-                        ...(event.message_id !== undefined && { MessageSid: String(event.message_id) }),
-                        OriginatingChannel: "qq", OriginatingTo: deliveryTo, CommandAuthorized: commandAuthorized,
-                        ...inboundMediaPayload,
-                        ...(replyMsgId && { ReplyToId: replyMsgId, ReplyToBody: replyToBody, ReplyToSender: replyToSender }),
-                    });
-                    if (config.debugLayerTrace) {
-                        const ctxMediaUrls = Array.isArray(ctxPayload.MediaUrls)
-                            ? ctxPayload.MediaUrls
-                            : (ctxPayload.MediaUrl ? [ctxPayload.MediaUrl] : []);
-                        const ctxMediaPaths = Array.isArray(ctxPayload.MediaPaths)
-                            ? ctxPayload.MediaPaths
-                            : (ctxPayload.MediaPath ? [ctxPayload.MediaPath] : []);
-                        console.log(
-                            `[QQLayerTrace] session ctx media urls=${ctxMediaUrls.length} paths=${ctxMediaPaths.length} sampleUrl=${ctxMediaUrls[0] || ""} samplePath=${ctxMediaPaths[0] || ""}`
-                        );
-                    }
-
-                    await runtime.channel.session.recordInboundSession({
-                        storePath: runtime.channel.session.resolveStorePath(cfg.session?.store, { agentId: route.agentId }),
-                        sessionKey: ctxPayload.SessionKey!, ctx: ctxPayload,
-                        updateLastRoute: undefined,
-                        onRecordError: (err) => console.error("QQ Session Error:", err)
-                    });
-
-                    const executeDispatch = async (mergedCtx: any, runState: { isStale: () => boolean }) => {
-                        currentRunState = runState;
-                        let processingDelayTimer: ReturnType<typeof setTimeout> | null = null;
-                        let typingCardActivated = false;
-                        const taskKey = buildTaskKey(account.accountId, isGroup, isGuild, groupId, guildId, channelId, userId);
-
-                        const clearProcessingTimers = () => {
-                            if (processingDelayTimer) {
-                                clearTimeout(processingDelayTimer);
-                                processingDelayTimer = null;
-                            }
-                        };
-
-                        if (config.showProcessingStatus !== false) {
-                            activeTaskIds.add(taskKey);
-                            const delayMs = Math.max(100, Number(config.processingStatusDelayMs ?? 500));
-                            processingDelayTimer = setTimeout(() => {
-                                if (isGroup) {
-                                    void activateGroupTypingIndicator(
-                                        client,
-                                        account.accountId,
-                                        groupId,
-                                        (config.processingStatusText || "输入中").trim() || "输入中",
-                                    ).then((fallbackActivated) => {
-                                        typingCardActivated = fallbackActivated;
-                                    });
-                                }
-                            }, delayMs);
-                        }
-
-                        const maxRetries = config.maxRetries ?? 3;
-                        const retryDelayMs = config.retryDelayMs ?? 3000;
-
-                        try {
-                            const matchedAgentId = route.agentId;
-                            const matchedAgentConfig = ((cfg as any).agents?.list || []).find((a: any) => a.id === matchedAgentId);
-                            // OpenClaw accepts either "provider/model" or
-                            // { primary, fallbacks } for agent model config.
-                            const normalizeModelConfig = (value: any) => {
-                                if (typeof value === "string") {
-                                    const primary = value.trim();
-                                    return primary ? { primary, fallbacks: [] as string[] } : undefined;
-                                }
-                                if (!value || typeof value !== "object") {
-                                    return undefined;
-                                }
-                                const primary = typeof value.primary === "string" ? value.primary.trim() : "";
-                                const fallbacks = Array.isArray(value.fallbacks)
-                                    ? value.fallbacks
-                                        .map((entry: any) => (typeof entry === "string" ? entry.trim() : ""))
-                                        .filter((entry: string) => Boolean(entry))
-                                    : [];
-                                if (!primary && fallbacks.length === 0) {
-                                    return undefined;
-                                }
-                                return { primary, fallbacks };
-                            };
-                            const rawModelConfig =
-                                normalizeModelConfig(matchedAgentConfig?.model) ||
-                                normalizeModelConfig((cfg as any).agents?.defaults?.model) ||
-                                { primary: "", fallbacks: [] as string[] };
-                            const fallbacks = rawModelConfig.fallbacks;
-
-                            const modelsToTry = [null, ...fallbacks];
-                            let globalDispatchError: any = null;
-
-                            out_loop:
-                            for (let modelIndex = 0; modelIndex < modelsToTry.length; modelIndex++) {
-                                const selectedFallback = modelsToTry[modelIndex];
-
-                                const modelToTest = modelsToTry[modelIndex] || rawModelConfig.primary;
-                                let currentCfg = cfg as any;
-                                if (runState.isStale()) {
-                                    break out_loop;
-                                }
-
-                                if (!modelToTest) {
-                                    globalDispatchError = new Error("[QQ] No model resolved for this route; check agents.<id>.model or agents.defaults.model");
-                                    console.error(globalDispatchError);
-                                    break out_loop;
-                                }
-
-                                if (modelIndex > 0) {
-                                    console.log(`[QQ] Failover triggered: Switching to fallback model ${modelToTest}`);
-                                    if (config.enableErrorNotify !== false) {
-                                        const notifyMsg = `⏳ 当前服务无响应，正尝试切换至备用线路 ${modelIndex}/${fallbacks.length}...`;
-                                        if (isGroup) client.sendGroupMsg(groupId, notifyMsg);
-                                        else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, notifyMsg);
-                                        else client.sendPrivateMsg(userId, notifyMsg);
-                                    }
-                                }
-
-                                currentCfg = {
-                                    ...(cfg as any),
-                                    agents: {
-                                        ...((cfg as any).agents || {}),
-                                        defaults: {
-                                            ...((cfg as any).agents?.defaults || {}),
-                                            model: { primary: modelToTest, fallbacks: [] }
-                                        },
-                                        list: ((cfg as any).agents?.list || []).map((a: any) => {
-                                            if (a.id === matchedAgentId) {
-                                                return { ...a, model: { primary: modelToTest, fallbacks: [] } };
-                                            }
-                                            return a;
-                                        })
-                                    }
-                                };
-
-                                for (let tryCount = 0; tryCount <= maxRetries; tryCount++) {
-                                    if (runState.isStale()) {
-                                        break out_loop;
-                                    }
-                                    deliveredAnything = false;
-                                    globalDispatchError = null;
-                                    dispatcherError = null;
-                                    try {
-                                        if (tryCount > 0) {
-                                            console.log(`[QQ] Model request failed or returned empty. Retrying (${tryCount}/${maxRetries}) after ${retryDelayMs}ms...`);
-                                            await sleep(retryDelayMs);
-                                            if (runState.isStale()) {
-                                                break out_loop;
-                                            }
-                                        }
-
-                                        const dispatchStartTime = Date.now();
-                                        try {
-                                            resetBufferedFinalTexts();
-                                            resetBufferedUnknownTexts();
-                                            const replyCfg = buildQQReplyConfig(currentCfg as OpenClawConfig, config);
-                                            const dispatchResult = await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-                                                ctx: mergedCtx,
-                                                cfg: replyCfg,
-                                                dispatcherOptions: {
-                                                    deliver,
-                                                    onError: (err, deliveryInfo) => {
-                                                        if (deliveryInfo.kind === "final") {
-                                                            dispatcherError = err;
-                                                        }
-                                                        console.error(`[QQ] buffered dispatch ${deliveryInfo.kind} failed: ${String(err)}`);
-                                                    },
-                                                },
-                                                replyOptions: {},
-                                            });
-                                            if (!runState.isStale()) {
-                                                console.log(`[QQ] dispatch result queuedFinal=${String(Boolean(dispatchResult?.queuedFinal))} counts=${JSON.stringify(dispatchResult?.counts || {})} session=${route.sessionKey}`);
-                                            }
-                                        } catch (err) {
-                                            globalDispatchError = err;
-                                            console.error(`[QQ] Error during buffered reply dispatch (attempt ${tryCount + 1}/${maxRetries + 1}):`, err);
-                                        }
-                                        const dispatchDurationMs = Date.now() - dispatchStartTime;
-                                        if (runState.isStale()) {
-                                            break out_loop;
-                                        }
-
-                                        globalDispatchError = globalDispatchError || dispatcherError;
-                                        const errMessage = globalDispatchError ? ((globalDispatchError instanceof Error) ? globalDispatchError.message : String(globalDispatchError)) : "";
-                                        if (globalDispatchError) {
-                                            resetBufferedUnknownTexts();
-                                            resetBufferedFinalTexts();
-                                        }
-
-                                        if (globalDispatchError) {
-                                            const fastFailWords = config.fastFailErrors || ["api key", "no api key found", "not found", "401", "unauthorized", "billing", "余额不足", "已欠费"];
-                                            const shouldFastFail = fastFailWords.some((word: string) => errMessage.toLowerCase().includes(word.toLowerCase()));
-
-                                            // Handle fast skips for predictable API errors like invalid tokens
-                                            // Ensure we don't accidentally skip actual rate limit errors
-                                            if (shouldFastFail && !errMessage.toLowerCase().includes("rate limit") && !errMessage.toLowerCase().includes("429")) {
-                                                console.log(`[QQ] Skipping retries for model due to fast-fail auth error: ${errMessage}`);
-                                                tryCount = maxRetries;
-                                            }
-                                        }
-
-                                        if (!globalDispatchError) {
-                                            const flushedUnknownText = await flushBufferedUnknownTexts("dispatch_end");
-                                            if (flushedUnknownText) deliveredAnything = true;
-                                            const flushedBufferedText = await flushBufferedFinalTexts();
-                                            if (flushedBufferedText) deliveredAnything = true;
-                                            const shouldFallback = config.enableEmptyReplyFallback !== false && !text.trim().startsWith('/');
-                                            if (deliveredAnything || !shouldFallback) {
-                                                break out_loop;
-                                            }
-
-                                            if (dispatchDurationMs < 500) {
-                                                console.log(`[QQ] Message dropped by core queue policy (duration ${dispatchDurationMs}ms). Skipping retries.`);
-                                                break out_loop;
-                                            }
-                                        }
-
-                                        if (tryCount === maxRetries) {
-                                                if (modelIndex === modelsToTry.length - 1 && !runState.isStale()) {
-                                                    if (globalDispatchError) {
-                                                        const errMessage = (globalDispatchError instanceof Error) ? globalDispatchError.message : String(globalDispatchError);
-                                                        const notifyMsg = errMessage.trim() ? `⚠️ 服务调用失败: ${errMessage}` : "⚠️ 服务调用失败，无具体错误信息，请稍后重试。";
-                                                    if (config.enableErrorNotify) deliver({ text: notifyMsg });
-                                                } else {
-                                                    const fallbackText = (config.emptyReplyFallbackText || "⚠️ 本轮模型返回空内容。请重试，或先执行 /newsession 后再试。").trim();
-                                                    if (fallbackText) {
-                                                        if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${fallbackText}`);
-                                                        else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, fallbackText);
-                                                        else client.sendPrivateMsg(userId, fallbackText);
-                                                    }
-                                                }
-                                            }
-                                            break;
-                                        }
-                                    } catch (loopErr) {
-                                        console.error(`[QQ] Unexpected error in dispatch loop:`, loopErr);
-                                    }
-                                }
-                            }
-                        } catch (error) {
-                            console.error(`[QQ] Outer error:`, error);
-                        }
-                        finally {
-                            resetBufferedUnknownTexts();
-                            resetBufferedFinalTexts();
-                            currentRunState = null;
-                            clearProcessingTimers();
-                            activeTaskIds.delete(taskKey);
-                            if (typingCardActivated && isGroup) {
-                                clearGroupTypingCard(client, account.accountId, groupId, (config.processingStatusText || "输入中").trim() || "输入中");
-                            }
-                        }
-                    };
-
-                    enqueueQQMessageForDispatch(
-                        route.sessionKey,
-                        { ctxPayload, executeDispatch, runEpoch: 0 },
-                        config,
-                        (msg: string) => {
-                            if (isGroup) client.sendGroupMsg(groupId, msg);
-                            else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, msg);
-                            else client.sendPrivateMsg(userId, msg);
-                        }
-                    );
-                } catch (err) {
-                    console.error("[QQ] Critical error in message handler:", err);
-                }
-            });
-
-            client.connect();
-            await new Promise<void>((resolve) => {
-                if (ctx.abortSignal.aborted) {
-                    resolve();
-                    return;
-                }
-                ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
-            });
+          let repliedMsg: any = null;
+          const replyMsgId = getReplyMessageId(event.message, inboundRawMessage, event);
+          if (config.debugLayerTrace) {
+            const segTypes = Array.isArray(event.message) ? event.message.map((seg) => String(seg?.type || "?")).join(",") : typeof event.message;
+            const inboundForwardIds = collectForwardIdsFromCandidates(event.message, inboundRawMessage);
+            console.log(
+              `[QQLayerTrace] inbound segTypes=${segTypes} rawHasReply=${String(/\[CQ:reply[,]/.test(inboundRawMessage))} rawHasForward=${String(/\[CQ:(?:forward|forward_msg|nodes)[,\]]/.test(inboundRawMessage))} replyMsgId=${replyMsgId || ""} forwardIds=${inboundForwardIds.join(",")}`,
+            );
+          }
+          if (replyMsgId) {
             try {
-                // keep provider task alive until gateway abort; avoid health-monitor restart loop
-            } finally {
-                if (accountStartGeneration.get(account.accountId) === accountGen) {
-                    accountStartGeneration.set(account.accountId, accountGen + 1);
+              repliedMsg = await client.getMsg(replyMsgId);
+            } catch (err) {}
+          }
+
+          if (repliedMsg) {
+            try {
+              await hydrateOneBotMessageMedia(client, Array.isArray(repliedMsg.message) ? repliedMsg.message : undefined, {
+                groupId: repliedMsg?.group_id ?? groupId,
+              });
+              const replyImageHints = extractImageHints(Array.isArray(repliedMsg.message) ? repliedMsg.message : repliedMsg.raw_message, 5);
+              for (const hint of replyImageHints) {
+                rememberImageHint(imageHints, imageHintMeta, hint);
+              }
+            } catch {}
+          }
+
+          if (fileHints.length === 0 && repliedMsg) {
+            try {
+              const replySegments = Array.isArray(repliedMsg.message) ? repliedMsg.message : [];
+              for (const seg of replySegments) {
+                if (seg?.type !== "file") continue;
+                if (!seg.data?.url && isGroup && seg.data?.file_id) {
+                  try {
+                    const info = await (client as any).sendWithResponse("get_group_file_url", {
+                      group_id: groupId,
+                      file_id: seg.data.file_id,
+                      busid: seg.data.busid,
+                    });
+                    if (info?.url) seg.data.url = info.url;
+                  } catch {}
                 }
-                client.disconnect();
-                clients.delete(account.accountId);
-                unregisterQQClient(account.accountId);
-                accountConfigs.delete(account.accountId);
-                const setForAccount = allClientsByAccount.get(account.accountId);
-                if (setForAccount) {
-                    setForAccount.delete(client);
-                    if (setForAccount.size === 0) {
-                        allClientsByAccount.delete(account.accountId);
-                    }
+                const fileName = seg.data?.name || seg.data?.file || "未命名";
+                const fileId = seg.data?.file_id ? String(seg.data.file_id) : undefined;
+                const busid = seg.data?.busid !== undefined ? String(seg.data.busid) : undefined;
+                const fileUrl = typeof seg.data?.url === "string" ? seg.data.url : undefined;
+                const fileSize = typeof seg.data?.file_size === "number" ? seg.data.file_size : undefined;
+                fileHints.push({
+                  kind: "file",
+                  name: fileName,
+                  ...(fileUrl ? { url: fileUrl } : {}),
+                  ...(fileId ? { fileId } : {}),
+                  ...(busid ? { busid } : {}),
+                  ...(fileSize !== undefined ? { size: fileSize } : {}),
+                });
+              }
+
+              if (fileHints.length === 0 && typeof repliedMsg.raw_message === "string") {
+                const raw = repliedMsg.raw_message;
+                const fileNameMatch = raw.match(/\[文件[:：]?\s*([^\]]+)\]/);
+                if (fileNameMatch) {
+                  fileHints.push({ kind: "file", name: fileNameMatch[1].trim() || "未命名" });
                 }
+              }
+            } catch {}
+          }
+
+          let historyContext = "";
+          if (isGroup && config.historyLimit !== 0) {
+            try {
+              const history = await client.getGroupMsgHistory(groupId);
+              if (history?.messages) {
+                const limit = config.historyLimit || 5;
+                historyContext = history.messages
+                  .slice(-(limit + 1), -1)
+                  .map((m: any) => `${m.sender?.nickname || m.user_id}: ${cleanCQCodes(m.raw_message || "")}`)
+                  .join("\n");
+              }
+            } catch (e) {}
+          }
+
+          const keywordOnlyTrigger = Boolean(config.keywordOnlyTrigger) && isGroup;
+          let isTriggered = forceTriggered || !isGroup || text.includes("[动作] 用户戳了你一下");
+          let keywordTriggered = false;
+          if (!isTriggered && keywordTriggers.length > 0) {
+            for (const kw of keywordTriggers) {
+              if (text.includes(kw)) {
+                isTriggered = true;
+                keywordTriggered = true;
+                break;
+              }
             }
-        },
-        logoutAccount: async ({ accountId, cfg }) => {
-            return { loggedOut: true, cleared: true };
-        }
-    },
-    outbound: {
-        sendText: async ({ to, text, accountId, replyToId }) => {
-            const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
-            if (!client) throw new Error("QQ client not connected");
-            const normalizedText = await resolveInlineCqRecord(text);
-            const chunks = splitMessage(normalizedText, 4000);
-            let lastAck: any = null;
-            for (let i = 0; i < chunks.length; i++) {
-                let message: OneBotMessage | string = chunks[i];
-                if (replyToId && i === 0) message = [{ type: "reply", data: { id: String(replyToId) } }, { type: "text", data: { text: chunks[i] } }];
-                const ack = await sendOneBotMessageWithAck(client, to, message);
-                if (!ack.ok) {
-                    throw new Error(ack.error || "Failed to send text");
+          }
+
+          let mentionedByAt = false;
+          let mentionedByReply = false;
+
+          const checkMention = isGroup || isGuild;
+          if (keywordOnlyTrigger && !isTriggered) return;
+          if (checkMention && config.requireMention && !keywordOnlyTrigger && !isTriggered) {
+            const selfId = client.getSelfId();
+            const effectiveSelfId = selfId ?? event.self_id;
+            if (!effectiveSelfId) return;
+            if (Array.isArray(event.message)) {
+              for (const s of event.message) {
+                if (s.type === "at" && (String(s.data?.qq) === String(effectiveSelfId) || s.data?.qq === "all")) {
+                  mentionedByAt = true;
+                  break;
                 }
-                lastAck = ack.data;
-
-                if (chunks.length > 1) await sleep(1000);
+              }
+            } else if (text.includes(`[CQ:at,qq=${effectiveSelfId}]`)) {
+              mentionedByAt = true;
             }
-            return {
-                channel: "qq",
-                messageId: resolveOutboundMessageId(lastAck),
-                timestamp: Date.now(),
-            };
-        },
-        sendMedia: async ({ to, text, mediaUrl, accountId, replyToId }) => {
-            const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
-            if (!client) throw new Error("QQ client not connected");
-
-            const runtimeCfg = (accountConfigs.get(accountId || DEFAULT_ACCOUNT_ID)
-                || accountConfigs.get(DEFAULT_ACCOUNT_ID)
-                || {}) as Partial<QQConfig>;
-
-            const hostSharedDir = typeof runtimeCfg.sharedMediaHostDir === "string" ? runtimeCfg.sharedMediaHostDir.trim() : "";
-            const containerSharedDirRaw = typeof runtimeCfg.sharedMediaContainerDir === "string" ? runtimeCfg.sharedMediaContainerDir.trim() : "";
-            const containerSharedDir = containerSharedDirRaw || "/openclaw_media";
-
-            const sourceKind = detectMediaKind(mediaUrl);
-            const groupId = parseGroupIdFromTarget(to);
-            const localSourcePath = toLocalPathIfAny(mediaUrl);
-            let stagedSharedPath: string | null = null;
-            if (localSourcePath && hostSharedDir) {
-                stagedSharedPath = await stageLocalFileForContainer(localSourcePath, hostSharedDir, containerSharedDir);
+            if (!mentionedByAt && repliedMsg?.sender?.user_id === effectiveSelfId) {
+              mentionedByReply = true;
             }
+            if (!mentionedByAt && !mentionedByReply) return;
+          }
 
-            const audioLikeSource = sourceKind === "audio";
-            let stagedAudioFile: string | null = null;
-            if (audioLikeSource && hostSharedDir) {
-                if (localSourcePath) {
-                    try {
-                        const copiedName = await ensureFileInSharedMedia(localSourcePath, hostSharedDir);
-                        stagedAudioFile = path.posix.join(containerSharedDir.replace(/\\/g, "/"), copiedName);
-                    } catch (err) {
-                        console.warn(`[QQ] Failed to stage source audio into shared media dir: ${String(err)}`);
-                    }
+          if (config.adminOnlyChat && !isAdmin) {
+            if (config.notifyNonAdminBlocked) {
+              const shouldNotifyBlocked = !isGroup && !isGuild ? true : isTriggered || mentionedByAt;
+              if (!shouldNotifyBlocked) return;
+              const now = Date.now();
+              const targetKey = isGroup ? `g:${groupId}:u:${userId}` : isGuild ? `guild:${guildId}:${channelId}:u:${userId}` : `dm:${userId}`;
+              const cacheKey = `${account.accountId}:${targetKey}`;
+              const lastNotifyAt = blockedNotifyCache.get(cacheKey) ?? 0;
+              if (blockedNotifyCooldownMs > 0 && now - lastNotifyAt < blockedNotifyCooldownMs) return;
+              blockedNotifyCache.set(cacheKey, now);
+              const msg = (config.nonAdminBlockedMessage || "当前仅管理员可触发机器人。\n如需使用请联系管理员。").trim();
+              if (msg) {
+                if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${msg}`);
+                else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, msg);
+                else client.sendPrivateMsg(userId, msg);
+              }
+            }
+            return;
+          }
+
+          let baseFromId = String(userId);
+          let conversationLabel = `QQ User ${userId}`;
+          if (isGroup) {
+            baseFromId = String(groupId);
+            const cachedGroupName = getCachedGroupName(account.accountId, String(groupId));
+            let resolvedGroupName = cachedGroupName || "";
+            if (!resolvedGroupName) {
+              try {
+                const groupInfo = await client.getGroupInfo(groupId);
+                const groupName = typeof groupInfo?.group_name === "string" ? groupInfo.group_name.trim() : typeof groupInfo?.data?.group_name === "string" ? groupInfo.data.group_name.trim() : "";
+                if (groupName) {
+                  resolvedGroupName = groupName;
+                  setCachedGroupName(account.accountId, String(groupId), groupName);
                 }
+              } catch (err) {
+                console.warn(`[QQ] Failed to resolve group name for ${groupId}: ${String(err)}`);
+              }
             }
-            const finalUrl = sourceKind === "image" || sourceKind === "audio"
-                ? await resolveMediaUrl(mediaUrl)
-                : mediaUrl;
+            conversationLabel = resolvedGroupName ? `QQ Group "${resolvedGroupName}"` : `QQ Group ${groupId}`;
+          } else if (isGuild) {
+            baseFromId = `guild:${guildId}:${channelId}`;
+            conversationLabel = `QQ Guild ${guildId} Channel ${channelId}`;
+          }
+          const fromId = buildEffectiveFromId(baseFromId, activeTempSlot);
+          const deliveryTo = buildEffectiveFromId(isGroup ? `group:${String(groupId)}` : isGuild ? `guild:${String(guildId)}:${String(channelId)}` : `user:${String(userId)}`, activeTempSlot);
+          const sessionLabel = buildQQSessionLabel({
+            isGroup,
+            isGuild,
+            groupId,
+            guildId,
+            channelId,
+            userId,
+            activeTempSlot,
+            timestampMs: event.time * 1000,
+            text,
+          });
 
-            let textAck: any = null;
-            if (text && text.trim()) {
-                const textMessage: OneBotMessage = [];
-                if (replyToId) textMessage.push({ type: "reply", data: { id: String(replyToId) } });
-                textMessage.push({ type: "text", data: { text } });
-                const ack = await sendOneBotMessageWithAck(client, to, textMessage);
-                if (!ack.ok) {
-                    throw new Error(`Text send failed: ${ack.error || "unknown"}`);
-                }
-                textAck = ack.data;
-            }
-
-            const mediaMessage: OneBotMessage = [];
-            if (replyToId && !(text && text.trim())) mediaMessage.push({ type: "reply", data: { id: String(replyToId) } });
-            const mediaKind = detectMediaKind(mediaUrl, finalUrl);
-            const audioLike = mediaKind === "audio";
-            const imageLike = mediaKind === "image";
-            const videoLike = mediaKind === "video";
-            const fileLike = mediaKind === "file";
-
-            if (audioLike && textAck) {
-                const configuredDelay = Number(runtimeCfg.rateLimitMs ?? 1000);
-                const delayMs = Number.isFinite(configuredDelay) ? Math.max(1200, configuredDelay) : 1200;
-                await sleep(delayMs);
-            }
-
-            if (imageLike) mediaMessage.push({ type: "image", data: { file: finalUrl } });
-            else if (audioLike) {
-                let recordFile = stagedAudioFile || finalUrl;
-                if (!finalUrl.startsWith("base64://") && hostSharedDir) {
-                    try {
-                        const localPath = finalUrl.startsWith("file:") ? fileURLToPath(finalUrl) : finalUrl;
-                        const copiedName = await ensureFileInSharedMedia(localPath, hostSharedDir);
-                        recordFile = path.posix.join(containerSharedDir.replace(/\\/g, "/"), copiedName);
-                    } catch (err) {
-                        console.warn(`[QQ] Failed to stage audio into shared media dir: ${String(err)}`);
-                    }
-                }
-                mediaMessage.push({ type: "record", data: { file: recordFile } });
-            }
-            else if (videoLike) {
-                const videoFile = stagedSharedPath || finalUrl;
-                mediaMessage.push({ type: "video", data: { file: videoFile } });
-            } else {
-                if (groupId && (stagedSharedPath || localSourcePath)) {
-                    const uploadPath = stagedSharedPath || localSourcePath!;
-                    const uploadName = guessFileName(mediaUrl);
-                    const uploadAck = await uploadGroupFile(client, groupId, uploadPath, uploadName);
-                    if (uploadAck.ok) {
-                        return {
-                            channel: "qq",
-                            messageId: resolveOutboundMessageId(textAck),
-                            timestamp: Date.now(),
-                            meta: {
-                                textSent: Boolean(textAck),
-                                mediaSent: true,
-                                transport: "upload_group_file",
-                                mediaKind: "file",
-                            },
-                        };
-                    }
-                    console.warn(`[QQ] upload_group_file failed (primary path): ${uploadAck.error || "unknown"}`);
-                }
-                mediaMessage.push({ type: "file", data: { file: stagedSharedPath || finalUrl, name: guessFileName(mediaUrl) } });
-            }
-
-            const mediaAck = await sendOneBotMessageWithAck(client, to, mediaMessage);
-            if (!mediaAck.ok) {
-                const primaryError = mediaAck.error || "unknown";
-                const errorClass = classifyMediaError(primaryError);
-                if ((videoLike || fileLike) && groupId && (stagedSharedPath || localSourcePath)) {
-                    const uploadPath = stagedSharedPath || localSourcePath!;
-                    const uploadName = guessFileName(mediaUrl);
-                    const uploadAck = await uploadGroupFile(client, groupId, uploadPath, uploadName);
-                    if (uploadAck.ok) {
-                        return {
-                            channel: "qq",
-                            messageId: resolveOutboundMessageId(textAck),
-                            timestamp: Date.now(),
-                            meta: {
-                                textSent: Boolean(textAck),
-                                mediaSent: true,
-                                fallbackSent: true,
-                                fallbackType: "upload_group_file",
-                                mediaKind: videoLike ? "video" : "file",
-                                errorClass,
-                                note: `Primary media path failed; fallback upload_group_file succeeded. reason=${primaryError}`,
-                            },
-                        };
-                    }
-                }
-                if (audioLike) {
-                    const fileFallback: OneBotMessage = [];
-                    if (replyToId && !(text && text.trim())) fileFallback.push({ type: "reply", data: { id: String(replyToId) } });
-                    let fallbackFile = stagedAudioFile || finalUrl;
-                    if (fallbackFile.startsWith("base64://")) {
-                        throw new Error(`Media send failed: ${primaryError} [${errorClass}]`);
-                    }
-                    if (!finalUrl.startsWith("base64://") && hostSharedDir) {
-                        try {
-                            const localPath = finalUrl.startsWith("file:") ? fileURLToPath(finalUrl) : finalUrl;
-                            const copiedName = await ensureFileInSharedMedia(localPath, hostSharedDir);
-                            fallbackFile = path.posix.join(containerSharedDir.replace(/\\/g, "/"), copiedName);
-                        } catch (err) {
-                            console.warn(`[QQ] Failed to stage fallback audio file into shared media dir: ${String(err)}`);
-                        }
-                    }
-                    fileFallback.push({ type: "file", data: { file: fallbackFile } });
-                    const fallbackAck = await sendOneBotMessageWithAck(client, to, fileFallback);
-                    if (fallbackAck.ok) {
-                        return {
-                            channel: "qq",
-                            messageId: resolveOutboundMessageId(fallbackAck.data, textAck),
-                            timestamp: Date.now(),
-                            meta: {
-                                textSent: Boolean(textAck),
-                                mediaSent: true,
-                                fallbackSent: true,
-                                fallbackType: "file",
-                                errorClass,
-                                mediaKind: "audio",
-                                note: `Audio(record) failed; fallback file sent. reason=${primaryError}`,
-                            },
-                        };
-                    }
-                }
-                throw new Error(`Media send failed: ${primaryError} [${errorClass}]`);
-            }
-            return {
-                channel: "qq",
-                messageId: resolveOutboundMessageId(mediaAck.data, textAck),
-                timestamp: Date.now(),
-                meta: {
-                    textSent: Boolean(textAck),
-                    mediaSent: true,
-                    mediaKind,
-                },
-            };
-        },
-        // @ts-ignore
-        deleteMessage: async ({ messageId, accountId }) => {
-            const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
-            if (!client) return { channel: "qq", success: false, error: "Client not connected" };
-            try { client.deleteMsg(messageId); return { channel: "qq", success: true }; }
-            catch (err) { return { channel: "qq", success: false, error: String(err) }; }
-        }
-    },
-    messaging: {
-        normalizeTarget,
-        targetResolver: {
-            looksLikeId: (raw, normalized) => {
-                const value = String(normalized || raw || "").trim();
-                return /^user:\d{5,12}$/i.test(value) || /^group:\d{5,12}$/i.test(value) || /^guild:/i.test(value);
+          const runtime = getQQRuntime();
+          const route = runtime.channel.routing.resolveAgentRoute({
+            cfg,
+            channel: "qq",
+            accountId: account.accountId,
+            peer: {
+              kind: isGuild ? "channel" : isGroup ? "group" : "direct",
+              id: fromId,
             },
-            hint: "私聊用 user:QQ号，群聊用 group:群号，频道用 guild:id:channel（不要只写纯数字）",
+          });
+
+          let deliveredAnything = false;
+          let dispatcherError: any = null;
+          let currentRunState: { isStale: () => boolean } | null = null;
+          const forwardThreshold = Number(config.forwardLongReplyThreshold ?? 0);
+          const canUseMergedForward = isGroup && Number.isFinite(forwardThreshold) && forwardThreshold > 0;
+          const unknownBlockBoundaryThreshold = Number.isFinite(forwardThreshold) && forwardThreshold > 0 ? forwardThreshold : 300;
+          const unknownBlockMergeWindowMs = 350;
+          const bufferedFinalTexts: string[] = [];
+          let bufferedFinalTotalChars = 0;
+          const bufferedUnknownTexts: string[] = [];
+          let bufferedUnknownTotalChars = 0;
+          let bufferedUnknownLastAt = 0;
+          let unknownFlushTimer: ReturnType<typeof setTimeout> | null = null;
+          let unknownFlushVersion = 0;
+          let pendingReplySessionSourcePrefix = config.showReplySessionSource ? buildReplySessionSourcePrefix(activeTempSlot) : "";
+
+          const takeReplySessionSourcePrefix = (): string => {
+            if (!pendingReplySessionSourcePrefix) return "";
+            const prefix = pendingReplySessionSourcePrefix;
+            pendingReplySessionSourcePrefix = "";
+            return prefix;
+          };
+
+          const sendSessionSourcePrefixOnly = async (): Promise<boolean> => {
+            const prefix = takeReplySessionSourcePrefix();
+            if (!prefix || currentRunState?.isStale()) return false;
+            if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${prefix}`);
+            else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, prefix);
+            else client.sendPrivateMsg(userId, prefix);
+            return true;
+          };
+
+          const resetBufferedFinalTexts = () => {
+            bufferedFinalTexts.length = 0;
+            bufferedFinalTotalChars = 0;
+          };
+
+          const clearUnknownFlushTimer = () => {
+            if (!unknownFlushTimer) return;
+            clearTimeout(unknownFlushTimer);
+            unknownFlushTimer = null;
+          };
+
+          const resetBufferedUnknownTexts = () => {
+            clearUnknownFlushTimer();
+            bufferedUnknownTexts.length = 0;
+            bufferedUnknownTotalChars = 0;
+            bufferedUnknownLastAt = 0;
+            unknownFlushVersion += 1;
+          };
+
+          const prepareOutgoingText = async (msg: string): Promise<string> => {
+            let processed = msg;
+            const sessionPrefix = takeReplySessionSourcePrefix();
+            if (sessionPrefix) {
+              processed = processed.trim() ? `${sessionPrefix}\n${processed}` : sessionPrefix;
+            }
+            if (config.formatMarkdown) processed = stripMarkdown(processed);
+            if (config.antiRiskMode) processed = processAntiRisk(processed);
+            return await resolveInlineCqRecord(processed);
+          };
+
+          const sendProcessedText = async (processed: string): Promise<boolean> => {
+            if (currentRunState?.isStale()) return false;
+            const chunks = splitMessage(processed, config.maxMessageLength || 4000);
+            for (let i = 0; i < chunks.length; i++) {
+              if (currentRunState?.isStale()) return i > 0;
+              let chunk = chunks[i];
+              if (isGroup && i === 0) chunk = `[CQ:at,qq=${userId}] ${chunk}`;
+
+              if (isGroup) client.sendGroupMsg(groupId, chunk);
+              else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, chunk);
+              else client.sendPrivateMsg(userId, chunk);
+
+              if (!isGuild && config.enableTTS && i === 0 && chunk.length < 100) {
+                const tts = chunk.replace(/\[CQ:.*?\]/g, "").trim();
+                if (tts) {
+                  if (isGroup) client.sendGroupMsg(groupId, `[CQ:tts,text=${tts}]`);
+                  else client.sendPrivateMsg(userId, `[CQ:tts,text=${tts}]`);
+                }
+              }
+
+              if (chunks.length > 1 && config.rateLimitMs > 0) await sleep(config.rateLimitMs);
+            }
+            return chunks.length > 0;
+          };
+
+          const flushTextBatch = async (texts: string[], totalLen: number, meta: { phaseLabel: string; reason?: string }): Promise<boolean> => {
+            if (currentRunState?.isStale() || texts.length === 0) return false;
+            if (canUseMergedForward && totalLen >= forwardThreshold) {
+              const sentAsForward = await sendLongTextAsForwardMessage({
+                client,
+                groupId,
+                texts,
+                nodeName: (config.forwardNodeName || "OpenClaw").trim() || "OpenClaw",
+                nodeUin: String(client.getSelfId() || userId),
+                nodeCharLimit: Number(config.forwardNodeCharLimit ?? 0),
+              });
+              if (currentRunState?.isStale()) return false;
+              if (sentAsForward) {
+                console.log(
+                  `[QQ] merged-forward delivered phase=${meta.phaseLabel} blocks=${texts.length} len=${totalLen} threshold=${forwardThreshold} group=${groupId}${meta.reason ? ` reason=${meta.reason}` : ""}`,
+                );
+                return true;
+              }
+              console.warn(
+                `[QQ] merged-forward failed, fallback to plain chunks phase=${meta.phaseLabel} blocks=${texts.length} len=${totalLen} threshold=${forwardThreshold} group=${groupId}${meta.reason ? ` reason=${meta.reason}` : ""}`,
+              );
+            }
+
+            let sentAnything = false;
+            for (const textItem of texts) {
+              const sent = await sendProcessedText(textItem);
+              if (sent) sentAnything = true;
+            }
+            if (sentAnything && meta.phaseLabel === "unknown") {
+              console.log(`[QQ] plain-text delivered phase=unknown blocks=${texts.length} len=${totalLen} group=${groupId}${meta.reason ? ` reason=${meta.reason}` : ""}`);
+            }
+            return sentAnything;
+          };
+
+          const flushBufferedFinalTexts = async (): Promise<boolean> => {
+            if (currentRunState?.isStale() || bufferedFinalTexts.length === 0) return false;
+            const texts = [...bufferedFinalTexts];
+            const totalLen = bufferedFinalTotalChars;
+            resetBufferedFinalTexts();
+            return await flushTextBatch(texts, totalLen, { phaseLabel: "final_answer" });
+          };
+
+          const flushBufferedUnknownTexts = async (reason: string): Promise<boolean> => {
+            if (currentRunState?.isStale() || bufferedUnknownTexts.length === 0) return false;
+            const texts = [...bufferedUnknownTexts];
+            const totalLen = bufferedUnknownTotalChars;
+            resetBufferedUnknownTexts();
+            return await flushTextBatch(texts, totalLen, { phaseLabel: "unknown", reason });
+          };
+
+          const scheduleUnknownFlush = () => {
+            if (bufferedUnknownTexts.length === 0) return;
+            clearUnknownFlushTimer();
+            const version = ++unknownFlushVersion;
+            unknownFlushTimer = setTimeout(() => {
+              if (version !== unknownFlushVersion) return;
+              void (async () => {
+                const flushed = await flushBufferedUnknownTexts("debounce");
+                if (flushed) deliveredAnything = true;
+              })();
+            }, unknownBlockMergeWindowMs);
+          };
+
+          const bufferUnknownBlockText = async (processed: string): Promise<void> => {
+            const now = Date.now();
+            const gapMs = bufferedUnknownLastAt > 0 ? now - bufferedUnknownLastAt : 0;
+            const shouldSplitShortThenLong =
+              bufferedUnknownTexts.length > 0 && bufferedUnknownTotalChars > 0 && bufferedUnknownTotalChars < unknownBlockBoundaryThreshold && processed.length >= unknownBlockBoundaryThreshold;
+            if (bufferedUnknownTexts.length > 0 && (gapMs > unknownBlockMergeWindowMs || shouldSplitShortThenLong)) {
+              const flushed = await flushBufferedUnknownTexts(gapMs > unknownBlockMergeWindowMs ? `gap_${gapMs}` : "short_then_long");
+              if (flushed) deliveredAnything = true;
+            }
+
+            bufferedUnknownTexts.push(processed);
+            bufferedUnknownTotalChars += processed.length;
+            bufferedUnknownLastAt = now;
+            if (config.debugLayerTrace) {
+              console.log(`[QQLayerTrace] unknown block buffered blocks=${bufferedUnknownTexts.length} total=${bufferedUnknownTotalChars} last=${processed.length}`);
+            }
+            scheduleUnknownFlush();
+          };
+
+          const deliver = async (payload: any, info?: { kind?: string }) => {
+            if (currentRunState?.isStale()) return;
+            const isTextFailure =
+              payload.text && (payload.text.includes("Agent failed before reply:") || payload.text.includes("Context overflow") || payload.text.includes("Message ordering conflict"));
+
+            if (payload.isError || isTextFailure) {
+              dispatcherError = new Error(payload.text || "API Error");
+              return;
+            }
+            const phase = resolveReplyPayloadPhase(payload);
+            if (config.debugLayerTrace && payload.text && payload.text.trim()) {
+              console.log(`[QQLayerTrace] outbound text kind=${info?.kind || "unknown"} phase=${phase || "unknown"} len=${payload.text.length}`);
+            }
+            if (payload.text && payload.text.trim()) {
+              const processed = await prepareOutgoingText(payload.text);
+              if (currentRunState?.isStale()) return;
+              if (processed.trim()) {
+                const isUnknownBlockText = !phase && info?.kind === "block";
+                if (isUnknownBlockText) {
+                  const flushedBufferedFinal = await flushBufferedFinalTexts();
+                  if (flushedBufferedFinal) deliveredAnything = true;
+                  await bufferUnknownBlockText(processed);
+                } else {
+                  const flushedBufferedUnknown = await flushBufferedUnknownTexts(`before_${phase || info?.kind || "text"}`);
+                  if (flushedBufferedUnknown) deliveredAnything = true;
+                  const shouldBufferKnownFinal = canUseMergedForward && (phase === "final_answer" || (!phase && info?.kind === "final"));
+                  if (shouldBufferKnownFinal) {
+                    bufferedFinalTexts.push(processed);
+                    bufferedFinalTotalChars += processed.length;
+                  } else {
+                    const flushedBufferedText = await flushBufferedFinalTexts();
+                    if (flushedBufferedText) deliveredAnything = true;
+                    const sentText = await sendProcessedText(processed);
+                    if (sentText) deliveredAnything = true;
+                  }
+                }
+              }
+            }
+            if (payload.files) {
+              const flushedUnknownText = await flushBufferedUnknownTexts("before_files");
+              if (flushedUnknownText) deliveredAnything = true;
+              const flushedBufferedText = await flushBufferedFinalTexts();
+              if (flushedBufferedText) deliveredAnything = true;
+              if (!payload.text && pendingReplySessionSourcePrefix) {
+                const sentPrefix = await sendSessionSourcePrefixOnly();
+                if (sentPrefix) deliveredAnything = true;
+              }
+              for (const f of payload.files) {
+                if (currentRunState?.isStale()) return;
+                if (f.url) {
+                  const url = await resolveMediaUrl(f.url);
+                  if (currentRunState?.isStale()) return;
+                  if (isImageFile(url)) {
+                    const imgMsg = `[CQ:image,file=${url}]`;
+                    if (isGroup) client.sendGroupMsg(groupId, imgMsg);
+                    else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, imgMsg);
+                    else client.sendPrivateMsg(userId, imgMsg);
+                  } else if (isAudioFile(url) || isAudioFile(f.url)) {
+                    const audioMsg = `[CQ:record,file=${url}]`;
+                    if (isGroup) client.sendGroupMsg(groupId, audioMsg);
+                    else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, `[语音] ${url}`);
+                    else client.sendPrivateMsg(userId, audioMsg);
+                  } else {
+                    const txtMsg = `[CQ:file,file=${url},name=${f.name || "file"}]`;
+                    if (isGroup) client.sendGroupMsg(groupId, txtMsg);
+                    else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, `[文件] ${url}`);
+                    else client.sendPrivateMsg(userId, txtMsg);
+                  }
+                  deliveredAnything = true;
+                  if (config.rateLimitMs > 0) await sleep(config.rateLimitMs);
+                }
+              }
+            }
+          };
+
+          let replyToBody = "";
+          let replyToSender = "";
+          if (replyMsgId && repliedMsg) {
+            replyToBody = cleanCQCodes(typeof repliedMsg.message === "string" ? repliedMsg.message : repliedMsg.raw_message || "");
+            replyToSender = repliedMsg.sender?.nickname || repliedMsg.sender?.card || String(repliedMsg.sender?.user_id || "");
+          }
+
+          const replySuffix = replyToBody ? `\n\n[Replying to ${replyToSender || "unknown"}]\n${replyToBody}\n[/Replying]` : "";
+          let bodyWithReply = cleanCQCodes(text) + replySuffix;
+          let systemBlock = "";
+          if (config.injectGatewayMeta !== false) {
+            systemBlock += buildQQHiddenMetaBlock({
+              accountId: account.accountId,
+              userId,
+              isGroup,
+              isGuild,
+              groupId,
+              guildId,
+              channelId,
+              conversationLabel,
+              sessionLabel,
+              senderName: event.sender?.nickname || event.sender?.card || "Unknown",
+              senderRole: event.sender?.role,
+              isAdmin,
+              activeTempSlot,
+              mentionedByAt,
+              mentionedByReply,
+              keywordTriggered,
+            });
+          }
+          if (config.systemPrompt) systemBlock += `<system>${config.systemPrompt}</system>\n\n`;
+          if (historyContext) systemBlock += `<history>\n${historyContext}\n</history>\n\n`;
+          if (config.debugLayerTrace) {
+            console.log(
+              `[QQLayerTrace] invoke buildReplyForwardContextBlock enrich=${String(config.enrichReplyForwardContext)} debug=${String(config.debugLayerTrace)} hasReply=${String(Boolean(repliedMsg))}`,
+            );
+          }
+          const layeredContext = await buildReplyForwardContextBlock({
+            client,
+            rootEvent: event,
+            repliedMsg,
+            cfg: config,
+          });
+          if (config.debugLayerTrace) {
+            console.log(`[QQLayerTrace] blockLen=${layeredContext.block.length} imageCount=${layeredContext.imageUrls.length}`);
+          }
+          if (layeredContext.block) systemBlock += layeredContext.block;
+          if (fileHints.length > 0 || imageHints.length > 0) {
+            systemBlock += `<attachments>\n`;
+            for (const hint of fileHints) {
+              const parts = [`name=${hint.name}`];
+              if (hint.url) parts.push(`url=${hint.url}`);
+              if (hint.fileId) parts.push(`file_id=${hint.fileId}`);
+              if (hint.busid) parts.push(`busid=${hint.busid}`);
+              if (hint.size !== undefined) parts.push(`size=${hint.size}`);
+              systemBlock += `- qq_file ${parts.join(" ")}\n`;
+            }
+            for (const imageUrl of imageHints.slice(0, 5)) {
+              systemBlock += `- qq_image url=${imageUrl}\n`;
+            }
+            systemBlock += `</attachments>\n\n`;
+          }
+          bodyWithReply = systemBlock + bodyWithReply;
+
+          const inboundMediaUrls = Array.from(new Set([...extractImageUrls(event.message), ...imageHints, ...layeredContext.imageUrls])).slice(0, 5);
+          const cachedInboundImages =
+            config.cacheInboundImagesToLocal !== false
+              ? await cacheImageHintsLocally(inboundMediaUrls, imageHintMeta)
+              : {
+                  entries: inboundMediaUrls.map((url) => ({ url, type: imageHintMeta.get(url)?.mimeType ?? inferImageMimeType(url) ?? DEFAULT_QQ_IMAGE_MIME })),
+                  failures: [] as Array<{ url: string; error: string }>,
+                };
+          const inboundMediaPayload = buildInboundMediaPayloadFromEntries(cachedInboundImages.entries);
+          if (config.debugLayerTrace) {
+            const mediaPathCount = Array.isArray((inboundMediaPayload as any).MediaPaths) ? (inboundMediaPayload as any).MediaPaths.length : (inboundMediaPayload as any).MediaPath ? 1 : 0;
+            const mediaUrlCount = Array.isArray((inboundMediaPayload as any).MediaUrls) ? (inboundMediaPayload as any).MediaUrls.length : (inboundMediaPayload as any).MediaUrl ? 1 : 0;
+            console.log(`[QQLayerTrace] inbound media urls=${inboundMediaUrls.length} ctxUrls=${mediaUrlCount} ctxPaths=${mediaPathCount} cacheFailures=${cachedInboundImages.failures.length}`);
+            if (cachedInboundImages.failures.length > 0) {
+              console.warn(`[QQLayerTrace] inbound media cache failed urls=${cachedInboundImages.failures.map((item) => `${item.url} err=${item.error}`).join(" | ")}`);
+            }
+          }
+
+          const shouldComputeCommandAuthorized = runtime.channel.commands.shouldComputeCommandAuthorized(text, cfg);
+          const commandAuthorized = shouldComputeCommandAuthorized ? isAdmin : true;
+          const ctxPayload = runtime.channel.reply.finalizeInboundContext({
+            Provider: "qq",
+            Channel: "qq",
+            From: fromId,
+            To: "qq:bot",
+            Body: bodyWithReply,
+            RawBody: text,
+            SenderId: String(userId),
+            SenderName: event.sender?.nickname || "Unknown",
+            ConversationLabel: conversationLabel,
+            ThreadLabel: sessionLabel,
+            SessionKey: route.sessionKey,
+            AccountId: route.accountId,
+            ChatType: isGroup ? "group" : isGuild ? "channel" : "direct",
+            Timestamp: event.time * 1000,
+            Surface: "qq",
+            ...(event.message_id !== undefined && { MessageSid: String(event.message_id) }),
+            OriginatingChannel: "qq",
+            OriginatingTo: deliveryTo,
+            CommandAuthorized: commandAuthorized,
+            ...inboundMediaPayload,
+            ...(replyMsgId && { ReplyToId: replyMsgId, ReplyToBody: replyToBody, ReplyToSender: replyToSender }),
+          });
+          if (config.debugLayerTrace) {
+            const ctxMediaUrls = Array.isArray(ctxPayload.MediaUrls) ? ctxPayload.MediaUrls : ctxPayload.MediaUrl ? [ctxPayload.MediaUrl] : [];
+            const ctxMediaPaths = Array.isArray(ctxPayload.MediaPaths) ? ctxPayload.MediaPaths : ctxPayload.MediaPath ? [ctxPayload.MediaPath] : [];
+            console.log(`[QQLayerTrace] session ctx media urls=${ctxMediaUrls.length} paths=${ctxMediaPaths.length} sampleUrl=${ctxMediaUrls[0] || ""} samplePath=${ctxMediaPaths[0] || ""}`);
+          }
+
+          await runtime.channel.session.recordInboundSession({
+            storePath: runtime.channel.session.resolveStorePath(cfg.session?.store, { agentId: route.agentId }),
+            sessionKey: ctxPayload.SessionKey!,
+            ctx: ctxPayload,
+            updateLastRoute: undefined,
+            onRecordError: (err) => console.error("QQ Session Error:", err),
+          });
+
+          const executeDispatch = async (mergedCtx: any, runState: { isStale: () => boolean }) => {
+            currentRunState = runState;
+            let processingDelayTimer: ReturnType<typeof setTimeout> | null = null;
+            let typingCardActivated = false;
+            const taskKey = buildTaskKey(account.accountId, isGroup, isGuild, groupId, guildId, channelId, userId);
+
+            const clearProcessingTimers = () => {
+              if (processingDelayTimer) {
+                clearTimeout(processingDelayTimer);
+                processingDelayTimer = null;
+              }
+            };
+
+            if (config.showProcessingStatus !== false) {
+              activeTaskIds.add(taskKey);
+              const delayMs = Math.max(100, Number(config.processingStatusDelayMs ?? 500));
+              processingDelayTimer = setTimeout(() => {
+                if (isGroup) {
+                  void activateGroupTypingIndicator(client, account.accountId, groupId, (config.processingStatusText || "输入中").trim() || "输入中").then((fallbackActivated) => {
+                    typingCardActivated = fallbackActivated;
+                  });
+                }
+              }, delayMs);
+            }
+
+            const maxRetries = config.maxRetries ?? 3;
+            const retryDelayMs = config.retryDelayMs ?? 3000;
+
+            try {
+              const matchedAgentId = route.agentId;
+              const matchedAgentConfig = ((cfg as any).agents?.list || []).find((a: any) => a.id === matchedAgentId);
+              // OpenClaw accepts either "provider/model" or
+              // { primary, fallbacks } for agent model config.
+              const normalizeModelConfig = (value: any) => {
+                if (typeof value === "string") {
+                  const primary = value.trim();
+                  return primary ? { primary, fallbacks: [] as string[] } : undefined;
+                }
+                if (!value || typeof value !== "object") {
+                  return undefined;
+                }
+                const primary = typeof value.primary === "string" ? value.primary.trim() : "";
+                const fallbacks = Array.isArray(value.fallbacks) ? value.fallbacks.map((entry: any) => (typeof entry === "string" ? entry.trim() : "")).filter((entry: string) => Boolean(entry)) : [];
+                if (!primary && fallbacks.length === 0) {
+                  return undefined;
+                }
+                return { primary, fallbacks };
+              };
+              const rawModelConfig = normalizeModelConfig(matchedAgentConfig?.model) || normalizeModelConfig((cfg as any).agents?.defaults?.model) || { primary: "", fallbacks: [] as string[] };
+              const fallbacks = rawModelConfig.fallbacks;
+
+              const modelsToTry = [null, ...fallbacks];
+              let globalDispatchError: any = null;
+
+              out_loop: for (let modelIndex = 0; modelIndex < modelsToTry.length; modelIndex++) {
+                const selectedFallback = modelsToTry[modelIndex];
+
+                const modelToTest = modelsToTry[modelIndex] || rawModelConfig.primary;
+                let currentCfg = cfg as any;
+                if (runState.isStale()) {
+                  break out_loop;
+                }
+
+                if (!modelToTest) {
+                  globalDispatchError = new Error("[QQ] No model resolved for this route; check agents.<id>.model or agents.defaults.model");
+                  console.error(globalDispatchError);
+                  break out_loop;
+                }
+
+                if (modelIndex > 0) {
+                  console.log(`[QQ] Failover triggered: Switching to fallback model ${modelToTest}`);
+                  if (config.enableErrorNotify !== false) {
+                    const notifyMsg = `⏳ 当前服务无响应，正尝试切换至备用线路 ${modelIndex}/${fallbacks.length}...`;
+                    if (isGroup) client.sendGroupMsg(groupId, notifyMsg);
+                    else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, notifyMsg);
+                    else client.sendPrivateMsg(userId, notifyMsg);
+                  }
+                }
+
+                currentCfg = {
+                  ...(cfg as any),
+                  agents: {
+                    ...((cfg as any).agents || {}),
+                    defaults: {
+                      ...((cfg as any).agents?.defaults || {}),
+                      model: { primary: modelToTest, fallbacks: [] },
+                    },
+                    list: ((cfg as any).agents?.list || []).map((a: any) => {
+                      if (a.id === matchedAgentId) {
+                        return { ...a, model: { primary: modelToTest, fallbacks: [] } };
+                      }
+                      return a;
+                    }),
+                  },
+                };
+
+                for (let tryCount = 0; tryCount <= maxRetries; tryCount++) {
+                  if (runState.isStale()) {
+                    break out_loop;
+                  }
+                  deliveredAnything = false;
+                  globalDispatchError = null;
+                  dispatcherError = null;
+                  try {
+                    if (tryCount > 0) {
+                      console.log(`[QQ] Model request failed or returned empty. Retrying (${tryCount}/${maxRetries}) after ${retryDelayMs}ms...`);
+                      await sleep(retryDelayMs);
+                      if (runState.isStale()) {
+                        break out_loop;
+                      }
+                    }
+
+                    const dispatchStartTime = Date.now();
+                    try {
+                      resetBufferedFinalTexts();
+                      resetBufferedUnknownTexts();
+                      const replyCfg = buildQQReplyConfig(currentCfg as OpenClawConfig, config);
+                      const dispatchResult = await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+                        ctx: mergedCtx,
+                        cfg: replyCfg,
+                        dispatcherOptions: {
+                          deliver,
+                          onError: (err, deliveryInfo) => {
+                            if (deliveryInfo.kind === "final") {
+                              dispatcherError = err;
+                            }
+                            console.error(`[QQ] buffered dispatch ${deliveryInfo.kind} failed: ${String(err)}`);
+                          },
+                        },
+                        replyOptions: {},
+                      });
+                      if (!runState.isStale()) {
+                        console.log(
+                          `[QQ] dispatch result queuedFinal=${String(Boolean(dispatchResult?.queuedFinal))} counts=${JSON.stringify(dispatchResult?.counts || {})} session=${route.sessionKey}`,
+                        );
+                      }
+                    } catch (err) {
+                      globalDispatchError = err;
+                      console.error(`[QQ] Error during buffered reply dispatch (attempt ${tryCount + 1}/${maxRetries + 1}):`, err);
+                    }
+                    const dispatchDurationMs = Date.now() - dispatchStartTime;
+                    if (runState.isStale()) {
+                      break out_loop;
+                    }
+
+                    globalDispatchError = globalDispatchError || dispatcherError;
+                    const errMessage = globalDispatchError ? (globalDispatchError instanceof Error ? globalDispatchError.message : String(globalDispatchError)) : "";
+                    if (globalDispatchError) {
+                      resetBufferedUnknownTexts();
+                      resetBufferedFinalTexts();
+                    }
+
+                    if (globalDispatchError) {
+                      const fastFailWords = config.fastFailErrors || ["api key", "no api key found", "not found", "401", "unauthorized", "billing", "余额不足", "已欠费"];
+                      const shouldFastFail = fastFailWords.some((word: string) => errMessage.toLowerCase().includes(word.toLowerCase()));
+
+                      // Handle fast skips for predictable API errors like invalid tokens
+                      // Ensure we don't accidentally skip actual rate limit errors
+                      if (shouldFastFail && !errMessage.toLowerCase().includes("rate limit") && !errMessage.toLowerCase().includes("429")) {
+                        console.log(`[QQ] Skipping retries for model due to fast-fail auth error: ${errMessage}`);
+                        tryCount = maxRetries;
+                      }
+                    }
+
+                    if (!globalDispatchError) {
+                      const flushedUnknownText = await flushBufferedUnknownTexts("dispatch_end");
+                      if (flushedUnknownText) deliveredAnything = true;
+                      const flushedBufferedText = await flushBufferedFinalTexts();
+                      if (flushedBufferedText) deliveredAnything = true;
+                      const shouldFallback = config.enableEmptyReplyFallback !== false && !text.trim().startsWith("/");
+                      if (deliveredAnything || !shouldFallback) {
+                        break out_loop;
+                      }
+
+                      if (dispatchDurationMs < 500) {
+                        console.log(`[QQ] Message dropped by core queue policy (duration ${dispatchDurationMs}ms). Skipping retries.`);
+                        break out_loop;
+                      }
+                    }
+
+                    if (tryCount === maxRetries) {
+                      if (modelIndex === modelsToTry.length - 1 && !runState.isStale()) {
+                        if (globalDispatchError) {
+                          const errMessage = globalDispatchError instanceof Error ? globalDispatchError.message : String(globalDispatchError);
+                          const notifyMsg = errMessage.trim() ? `⚠️ 服务调用失败: ${errMessage}` : "⚠️ 服务调用失败，无具体错误信息，请稍后重试。";
+                          if (config.enableErrorNotify) deliver({ text: notifyMsg });
+                        } else {
+                          const fallbackText = (config.emptyReplyFallbackText || "⚠️ 本轮模型返回空内容。请重试，或先执行 /newsession 后再试。").trim();
+                          if (fallbackText) {
+                            if (isGroup) client.sendGroupMsg(groupId, `[CQ:at,qq=${userId}] ${fallbackText}`);
+                            else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, fallbackText);
+                            else client.sendPrivateMsg(userId, fallbackText);
+                          }
+                        }
+                      }
+                      break;
+                    }
+                  } catch (loopErr) {
+                    console.error(`[QQ] Unexpected error in dispatch loop:`, loopErr);
+                  }
+                }
+              }
+            } catch (error) {
+              console.error(`[QQ] Outer error:`, error);
+            } finally {
+              resetBufferedUnknownTexts();
+              resetBufferedFinalTexts();
+              currentRunState = null;
+              clearProcessingTimers();
+              activeTaskIds.delete(taskKey);
+              if (typingCardActivated && isGroup) {
+                clearGroupTypingCard(client, account.accountId, groupId, (config.processingStatusText || "输入中").trim() || "输入中");
+              }
+            }
+          };
+
+          enqueueQQMessageForDispatch(route.sessionKey, { ctxPayload, executeDispatch, runEpoch: 0 }, config, (msg: string) => {
+            if (isGroup) client.sendGroupMsg(groupId, msg);
+            else if (isGuild) client.sendGuildChannelMsg(guildId, channelId, msg);
+            else client.sendPrivateMsg(userId, msg);
+          });
+        } catch (err) {
+          console.error("[QQ] Critical error in message handler:", err);
         }
+      });
+
+      client.connect();
+      await new Promise<void>((resolve) => {
+        if (ctx.abortSignal.aborted) {
+          resolve();
+          return;
+        }
+        ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      try {
+        // keep provider task alive until gateway abort; avoid health-monitor restart loop
+      } finally {
+        if (accountStartGeneration.get(account.accountId) === accountGen) {
+          accountStartGeneration.set(account.accountId, accountGen + 1);
+        }
+        client.disconnect();
+        clients.delete(account.accountId);
+        unregisterQQClient(account.accountId);
+        accountConfigs.delete(account.accountId);
+        const setForAccount = allClientsByAccount.get(account.accountId);
+        if (setForAccount) {
+          setForAccount.delete(client);
+          if (setForAccount.size === 0) {
+            allClientsByAccount.delete(account.accountId);
+          }
+        }
+      }
     },
-    agentPrompt: {
-        messageToolHints: () => [
-            "QQ 发送目标必须带类型前缀：私聊 `user:<QQ号>`，群聊 `group:<群号>`，频道 `guild:<guildId>:<channelId>`；不要只写纯数字。",
-        ],
-    }
+    logoutAccount: async ({ accountId, cfg }) => {
+      return { loggedOut: true, cleared: true };
+    },
+  },
+  outbound: {
+    sendText: async ({ to, text, accountId, replyToId }) => {
+      const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
+      if (!client) throw new Error("QQ client not connected");
+      const normalizedText = await resolveInlineCqRecord(text);
+      const chunks = splitMessage(normalizedText, 4000);
+      let lastAck: any = null;
+      for (let i = 0; i < chunks.length; i++) {
+        let message: OneBotMessage | string = chunks[i];
+        if (replyToId && i === 0)
+          message = [
+            { type: "reply", data: { id: String(replyToId) } },
+            { type: "text", data: { text: chunks[i] } },
+          ];
+        const ack = await sendOneBotMessageWithAck(client, to, message);
+        if (!ack.ok) {
+          throw new Error(ack.error || "Failed to send text");
+        }
+        lastAck = ack.data;
+
+        if (chunks.length > 1) await sleep(1000);
+      }
+      return {
+        channel: "qq",
+        messageId: resolveOutboundMessageId(lastAck),
+        timestamp: Date.now(),
+      };
+    },
+    sendMedia: async ({ to, text, mediaUrl, accountId, replyToId }) => {
+      const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
+      if (!client) throw new Error("QQ client not connected");
+
+      const runtimeCfg = (accountConfigs.get(accountId || DEFAULT_ACCOUNT_ID) || accountConfigs.get(DEFAULT_ACCOUNT_ID) || {}) as Partial<QQConfig>;
+
+      const hostSharedDir = typeof runtimeCfg.sharedMediaHostDir === "string" ? runtimeCfg.sharedMediaHostDir.trim() : "";
+      const containerSharedDirRaw = typeof runtimeCfg.sharedMediaContainerDir === "string" ? runtimeCfg.sharedMediaContainerDir.trim() : "";
+      const containerSharedDir = containerSharedDirRaw || "/openclaw_media";
+
+      const sourceKind = detectMediaKind(mediaUrl);
+      const groupId = parseGroupIdFromTarget(to);
+      const localSourcePath = toLocalPathIfAny(mediaUrl);
+      let stagedSharedPath: string | null = null;
+      if (localSourcePath && hostSharedDir) {
+        stagedSharedPath = await stageLocalFileForContainer(localSourcePath, hostSharedDir, containerSharedDir);
+      }
+
+      const audioLikeSource = sourceKind === "audio";
+      let stagedAudioFile: string | null = null;
+      if (audioLikeSource && hostSharedDir) {
+        if (localSourcePath) {
+          try {
+            const copiedName = await ensureFileInSharedMedia(localSourcePath, hostSharedDir);
+            stagedAudioFile = path.posix.join(containerSharedDir.replace(/\\/g, "/"), copiedName);
+          } catch (err) {
+            console.warn(`[QQ] Failed to stage source audio into shared media dir: ${String(err)}`);
+          }
+        }
+      }
+      const finalUrl = sourceKind === "image" || sourceKind === "audio" ? await resolveMediaUrl(mediaUrl) : mediaUrl;
+
+      let textAck: any = null;
+      if (text && text.trim()) {
+        const textMessage: OneBotMessage = [];
+        if (replyToId) textMessage.push({ type: "reply", data: { id: String(replyToId) } });
+        textMessage.push({ type: "text", data: { text } });
+        const ack = await sendOneBotMessageWithAck(client, to, textMessage);
+        if (!ack.ok) {
+          throw new Error(`Text send failed: ${ack.error || "unknown"}`);
+        }
+        textAck = ack.data;
+      }
+
+      const mediaMessage: OneBotMessage = [];
+      if (replyToId && !(text && text.trim())) mediaMessage.push({ type: "reply", data: { id: String(replyToId) } });
+      const mediaKind = detectMediaKind(mediaUrl, finalUrl);
+      const audioLike = mediaKind === "audio";
+      const imageLike = mediaKind === "image";
+      const videoLike = mediaKind === "video";
+      const fileLike = mediaKind === "file";
+
+      if (audioLike && textAck) {
+        const configuredDelay = Number(runtimeCfg.rateLimitMs ?? 1000);
+        const delayMs = Number.isFinite(configuredDelay) ? Math.max(1200, configuredDelay) : 1200;
+        await sleep(delayMs);
+      }
+
+      if (imageLike) mediaMessage.push({ type: "image", data: { file: finalUrl } });
+      else if (audioLike) {
+        let recordFile = stagedAudioFile || finalUrl;
+        if (!finalUrl.startsWith("base64://") && hostSharedDir) {
+          try {
+            const localPath = finalUrl.startsWith("file:") ? fileURLToPath(finalUrl) : finalUrl;
+            const copiedName = await ensureFileInSharedMedia(localPath, hostSharedDir);
+            recordFile = path.posix.join(containerSharedDir.replace(/\\/g, "/"), copiedName);
+          } catch (err) {
+            console.warn(`[QQ] Failed to stage audio into shared media dir: ${String(err)}`);
+          }
+        }
+        mediaMessage.push({ type: "record", data: { file: recordFile } });
+      } else if (videoLike) {
+        const videoFile = stagedSharedPath || finalUrl;
+        mediaMessage.push({ type: "video", data: { file: videoFile } });
+      } else {
+        if (groupId && (stagedSharedPath || localSourcePath)) {
+          const uploadPath = stagedSharedPath || localSourcePath!;
+          const uploadName = guessFileName(mediaUrl);
+          const uploadAck = await uploadGroupFile(client, groupId, uploadPath, uploadName);
+          if (uploadAck.ok) {
+            return {
+              channel: "qq",
+              messageId: resolveOutboundMessageId(textAck),
+              timestamp: Date.now(),
+              meta: {
+                textSent: Boolean(textAck),
+                mediaSent: true,
+                transport: "upload_group_file",
+                mediaKind: "file",
+              },
+            };
+          }
+          console.warn(`[QQ] upload_group_file failed (primary path): ${uploadAck.error || "unknown"}`);
+        }
+        mediaMessage.push({ type: "file", data: { file: stagedSharedPath || finalUrl, name: guessFileName(mediaUrl) } });
+      }
+
+      const mediaAck = await sendOneBotMessageWithAck(client, to, mediaMessage);
+      if (!mediaAck.ok) {
+        const primaryError = mediaAck.error || "unknown";
+        const errorClass = classifyMediaError(primaryError);
+        if ((videoLike || fileLike) && groupId && (stagedSharedPath || localSourcePath)) {
+          const uploadPath = stagedSharedPath || localSourcePath!;
+          const uploadName = guessFileName(mediaUrl);
+          const uploadAck = await uploadGroupFile(client, groupId, uploadPath, uploadName);
+          if (uploadAck.ok) {
+            return {
+              channel: "qq",
+              messageId: resolveOutboundMessageId(textAck),
+              timestamp: Date.now(),
+              meta: {
+                textSent: Boolean(textAck),
+                mediaSent: true,
+                fallbackSent: true,
+                fallbackType: "upload_group_file",
+                mediaKind: videoLike ? "video" : "file",
+                errorClass,
+                note: `Primary media path failed; fallback upload_group_file succeeded. reason=${primaryError}`,
+              },
+            };
+          }
+        }
+        if (audioLike) {
+          const fileFallback: OneBotMessage = [];
+          if (replyToId && !(text && text.trim())) fileFallback.push({ type: "reply", data: { id: String(replyToId) } });
+          let fallbackFile = stagedAudioFile || finalUrl;
+          if (fallbackFile.startsWith("base64://")) {
+            throw new Error(`Media send failed: ${primaryError} [${errorClass}]`);
+          }
+          if (!finalUrl.startsWith("base64://") && hostSharedDir) {
+            try {
+              const localPath = finalUrl.startsWith("file:") ? fileURLToPath(finalUrl) : finalUrl;
+              const copiedName = await ensureFileInSharedMedia(localPath, hostSharedDir);
+              fallbackFile = path.posix.join(containerSharedDir.replace(/\\/g, "/"), copiedName);
+            } catch (err) {
+              console.warn(`[QQ] Failed to stage fallback audio file into shared media dir: ${String(err)}`);
+            }
+          }
+          fileFallback.push({ type: "file", data: { file: fallbackFile } });
+          const fallbackAck = await sendOneBotMessageWithAck(client, to, fileFallback);
+          if (fallbackAck.ok) {
+            return {
+              channel: "qq",
+              messageId: resolveOutboundMessageId(fallbackAck.data, textAck),
+              timestamp: Date.now(),
+              meta: {
+                textSent: Boolean(textAck),
+                mediaSent: true,
+                fallbackSent: true,
+                fallbackType: "file",
+                errorClass,
+                mediaKind: "audio",
+                note: `Audio(record) failed; fallback file sent. reason=${primaryError}`,
+              },
+            };
+          }
+        }
+        throw new Error(`Media send failed: ${primaryError} [${errorClass}]`);
+      }
+      return {
+        channel: "qq",
+        messageId: resolveOutboundMessageId(mediaAck.data, textAck),
+        timestamp: Date.now(),
+        meta: {
+          textSent: Boolean(textAck),
+          mediaSent: true,
+          mediaKind,
+        },
+      };
+    },
+    // @ts-ignore
+    deleteMessage: async ({ messageId, accountId }) => {
+      const client = getClientForAccount(accountId || DEFAULT_ACCOUNT_ID);
+      if (!client) return { channel: "qq", success: false, error: "Client not connected" };
+      try {
+        client.deleteMsg(messageId);
+        return { channel: "qq", success: true };
+      } catch (err) {
+        return { channel: "qq", success: false, error: String(err) };
+      }
+    },
+  },
+  messaging: {
+    normalizeTarget,
+    targetResolver: {
+      looksLikeId: (raw, normalized) => {
+        const value = String(normalized || raw || "").trim();
+        return /^user:\d{5,12}$/i.test(value) || /^group:\d{5,12}$/i.test(value) || /^guild:/i.test(value);
+      },
+      hint: "私聊用 user:QQ号，群聊用 group:群号，频道用 guild:id:channel（不要只写纯数字）",
+    },
+  },
+  agentPrompt: {
+    messageToolHints: () => ["QQ 发送目标必须带类型前缀：私聊 `user:<QQ号>`，群聊 `group:<群号>`，频道 `guild:<guildId>:<channelId>`；不要只写纯数字。"],
+  },
 };

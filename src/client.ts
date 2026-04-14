@@ -98,7 +98,7 @@ export class OneBotClient extends EventEmitter {
           }
           console.log(`[QQ] Flushed ${sent}/${toFlush.length} queued outbound message(s)`);
         }
-        
+
         // Start heartbeat check
         this.startHeartbeat();
       });
@@ -159,7 +159,7 @@ export class OneBotClient extends EventEmitter {
         return;
       }
       this.isAlive = true;
-    }, 45000); 
+    }, 45000);
   }
 
   private handleDisconnect() {
@@ -183,13 +183,13 @@ export class OneBotClient extends EventEmitter {
   private scheduleReconnect() {
     if (this.transportMode === "http") return;
     if (this.reconnectTimer) return; // Already scheduled
-    
+
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay);
     console.log(`[QQ] Reconnecting in ${delay / 1000}s (Attempt ${this.reconnectAttempts + 1})...`);
-    
+
     this.reconnectTimer = setTimeout(() => {
-        this.reconnectAttempts++;
-        this.connect();
+      this.reconnectAttempts++;
+      this.connect();
     }, delay);
   }
 
@@ -251,11 +251,7 @@ export class OneBotClient extends EventEmitter {
 
   async getForwardMsg(id: string): Promise<any> {
     const raw = String(id || "").trim();
-    const tries: Array<Record<string, any>> = [
-      { id: raw },
-      { message_id: raw },
-      { forward_id: raw },
-    ];
+    const tries: Array<Record<string, any>> = [{ id: raw }, { message_id: raw }, { forward_id: raw }];
     if (/^\d+$/.test(raw)) {
       const n = Number.parseInt(raw, 10);
       tries.unshift({ id: n });
@@ -311,20 +307,24 @@ export class OneBotClient extends EventEmitter {
     // Note: API name varies by implementation (get_guild_list vs get_guilds)
     // We try the most common one for extended OneBot
     try {
-        return await this.sendWithResponse("get_guild_list", {});
+      return await this.sendWithResponse("get_guild_list", {});
     } catch {
-        return [];
+      return [];
     }
   }
 
   async getGuildServiceProfile(): Promise<any> {
-      try { return await this.sendWithResponse("get_guild_service_profile", {}); } catch { return null; }
+    try {
+      return await this.sendWithResponse("get_guild_service_profile", {});
+    } catch {
+      return null;
+    }
   }
 
   sendGroupPoke(groupId: number, userId: number) {
-      this.send("group_poke", { group_id: groupId, user_id: userId });
-      // Note: Some implementations use send_poke or touch
-      // Standard OneBot v11 doesn't enforce poke API, but group_poke is common in go-cqhttp
+    this.send("group_poke", { group_id: groupId, user_id: userId });
+    // Note: Some implementations use send_poke or touch
+    // Standard OneBot v11 doesn't enforce poke API, but group_poke is common in go-cqhttp
   }
   // --------------------------------------
 
@@ -449,7 +449,9 @@ export class OneBotClient extends EventEmitter {
   }
 
   private async sendHttpRequest(action: string, params: any, timeoutMs: number = 5000): Promise<any> {
-    const baseUrl = String(this.options.httpUrl || "").trim().replace(/\/+$/, "");
+    const baseUrl = String(this.options.httpUrl || "")
+      .trim()
+      .replace(/\/+$/, "");
     if (!baseUrl) {
       throw new Error("HTTP API URL not configured");
     }

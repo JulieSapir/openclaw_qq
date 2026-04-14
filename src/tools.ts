@@ -6,9 +6,7 @@
  * - 发送频率受限于 OneBotClient 本身的队列
  */
 
-import {
-  getRegisteredClient,
-} from "./runtime.js";
+import { getRegisteredClient } from "./runtime.js";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
@@ -51,8 +49,7 @@ const QQGetContextSchema = {
     action: {
       type: "string" as const,
       enum: ["group_list", "friend_list", "group_history", "group_info", "get_message"],
-      description:
-        "操作类型：group_list（群列表）、friend_list（好友列表）、group_history（群消息历史）、group_info（群详情）、get_message（获取单条消息）",
+      description: "操作类型：group_list（群列表）、friend_list（好友列表）、group_history（群消息历史）、group_info（群详情）、get_message（获取单条消息）",
     },
     group_id: {
       type: "number" as const,
@@ -180,22 +177,23 @@ function truncateForToolResponse(data: unknown, maxChars = 8000): string {
   return json.slice(0, maxChars) + "\n... (已截断)";
 }
 
+/** 统一工具返回值格式，符合 AgentToolResult 规范 */
+function toolResult(text: string, details?: unknown) {
+  return { content: [{ type: "text" as const, text }], details: details ?? {} };
+}
+
 // ─── Tool 工厂 ─────────────────────────────────────────────
 
 export function createQQSendMessageTool(_ctx?: any) {
   return {
     name: "qq_send_message",
     label: "QQ 发送消息",
-    description:
-      "向 QQ 群或私聊主动发送消息。支持普通文本和合并转发形式。仅管理员可触发。",
+    description: "向 QQ 群或私聊主动发送消息。支持普通文本和合并转发形式。仅管理员可触发。",
     parameters: QQSendMessageSchema,
-    execute: async (
-      _toolCallId: string,
-      rawParams: unknown,
-    ) => {
+    execute: async (_toolCallId: string, rawParams: unknown) => {
       const params = rawParams as QQSendMessageParams;
       const { client, error } = resolveClient();
-      if (!client) return { output: error };
+      if (!client) return toolResult(error!);
 
       // 统一处理 MEDIA: 前缀（异步转 base64）
       const resolvedMessage = await resolveMediaContent(params.message);
@@ -219,31 +217,23 @@ export function createQQSendMessageTool(_ctx?: any) {
             ];
             // 尝试 send_group_forward_msg，失败退回 send_forward_msg
             try {
-              await (client as any).sendWithResponse(
-                "send_group_forward_msg",
-                { group_id: params.target_id, messages },
-                15000,
-              );
+              await (client as any).sendWithResponse("send_group_forward_msg", { group_id: params.target_id, messages }, 15000);
             } catch {
-              await (client as any).sendWithResponse(
-                "send_forward_msg",
-                { group_id: params.target_id, messages },
-                15000,
-              );
+              await (client as any).sendWithResponse("send_forward_msg", { group_id: params.target_id, messages }, 15000);
             }
-            return { output: `已向群 ${params.target_id} 发送合并转发消息` };
+            return toolResult(`已向群 ${params.target_id} 发送合并转发消息`);
           }
           const ack = await client.sendGroupMsgAck(params.target_id, resolvedMessage);
           const msgId = ack?.message_id ?? "unknown";
-          return { output: `已向群 ${params.target_id} 发送消息（message_id: ${msgId}）` };
+          return toolResult(`已向群 ${params.target_id} 发送消息（message_id: ${msgId}）`);
         }
 
         // 私聊
         const ack = await client.sendPrivateMsgAck(params.target_id, resolvedMessage);
         const msgId = ack?.message_id ?? "unknown";
-        return { output: `已向用户 ${params.target_id} 发送私聊消息（message_id: ${msgId}）` };
+        return toolResult(`已向用户 ${params.target_id} 发送私聊消息（message_id: ${msgId}）`);
       } catch (err) {
-        return { output: `发送失败：${String(err)}` };
+        return toolResult(`发送失败：${String(err)}`);
       }
     },
   };
@@ -253,57 +243,43 @@ export function createQQGetContextTool(_ctx?: any) {
   return {
     name: "qq_get_context",
     label: "QQ 获取上下文",
-    description:
-      "获取 QQ 群列表、好友列表、群消息历史、群详情或单条消息内容。仅管理员可触发。",
+    description: "获取 QQ 群列表、好友列表、群消息历史、群详情或单条消息内容。仅管理员可触发。",
     parameters: QQGetContextSchema,
-    execute: async (
-      _toolCallId: string,
-      rawParams: unknown,
-    ) => {
+    execute: async (_toolCallId: string, rawParams: unknown) => {
       const params = rawParams as QQGetContextParams;
       const { client, error } = resolveClient();
-      if (!client) return { output: error };
+      if (!client) return toolResult(error!);
 
       try {
         switch (params.action) {
           case "group_list": {
             const groups = await client.getGroupList();
-            return {
-              output: `获取到 ${groups.length} 个群：\n${truncateForToolResponse(groups)}`,
-            };
+            return toolResult(`获取到 ${groups.length} 个群：\n${truncateForToolResponse(groups)}`, groups);
           }
           case "friend_list": {
             const friends = await client.getFriendList();
-            return {
-              output: `获取到 ${friends.length} 个好友：\n${truncateForToolResponse(friends)}`,
-            };
+            return toolResult(`获取到 ${friends.length} 个好友：\n${truncateForToolResponse(friends)}`, friends);
           }
           case "group_history": {
-            if (!params.group_id) return { output: "group_history 需要 group_id 参数" };
+            if (!params.group_id) return toolResult("group_history 需要 group_id 参数");
             const history = await client.getGroupMsgHistory(params.group_id);
-            return {
-              output: `群 ${params.group_id} 消息历史：\n${truncateForToolResponse(history)}`,
-            };
+            return toolResult(`群 ${params.group_id} 消息历史：\n${truncateForToolResponse(history)}`, history);
           }
           case "group_info": {
-            if (!params.group_id) return { output: "group_info 需要 group_id 参数" };
+            if (!params.group_id) return toolResult("group_info 需要 group_id 参数");
             const info = await client.getGroupInfo(params.group_id);
-            return {
-              output: `群 ${params.group_id} 详情：\n${truncateForToolResponse(info)}`,
-            };
+            return toolResult(`群 ${params.group_id} 详情：\n${truncateForToolResponse(info)}`, info);
           }
           case "get_message": {
-            if (!params.message_id) return { output: "get_message 需要 message_id 参数" };
+            if (!params.message_id) return toolResult("get_message 需要 message_id 参数");
             const msg = await client.getMsg(params.message_id);
-            return {
-              output: `消息详情：\n${truncateForToolResponse(msg)}`,
-            };
+            return toolResult(`消息详情：\n${truncateForToolResponse(msg)}`, msg);
           }
           default:
-            return { output: `未知操作：${String((params as any).action)}` };
+            return toolResult(`未知操作：${String((params as any).action)}`);
         }
       } catch (err) {
-        return { output: `获取失败：${String(err)}` };
+        return toolResult(`获取失败：${String(err)}`);
       }
     },
   };
@@ -313,82 +289,60 @@ export function createQQForwardMessageTool(_ctx?: any) {
   return {
     name: "qq_forward_message",
     label: "QQ 合并转发",
-    description:
-      "向 QQ 群或私聊发送合并转发消息，可包含多条消息节点。仅管理员可触发。",
+    description: "向 QQ 群或私聊发送合并转发消息，可包含多条消息节点。仅管理员可触发。",
     parameters: QQForwardMessageSchema,
-    execute: async (
-      _toolCallId: string,
-      rawParams: unknown,
-    ) => {
+    execute: async (_toolCallId: string, rawParams: unknown) => {
       const params = rawParams as QQForwardMessageParams;
       const { client, error } = resolveClient();
-      if (!client) return { output: error };
+      if (!client) return toolResult(error!);
 
       const selfId = client.getSelfId();
       const defaultUin = selfId ? String(selfId) : "10000";
 
-      const forwardNodes = await Promise.all(params.messages.map(async (msg) => ({
-        type: "node" as const,
-        data: {
-          name: msg.name,
-          uin: defaultUin,
-          content: await resolveForwardNodeContent(msg.content),
-        },
-      })));
+      const forwardNodes = await Promise.all(
+        params.messages.map(async (msg) => ({
+          type: "node" as const,
+          data: {
+            name: msg.name,
+            uin: defaultUin,
+            content: await resolveForwardNodeContent(msg.content),
+          },
+        })),
+      );
 
       if (params.target_type === "group") {
-          // 群合并转发：先尝试 send_group_forward_msg，失败尝试 send_forward_msg
-          let lastErr: unknown;
-          try {
-            await (client as any).sendWithResponse(
-              "send_group_forward_msg",
-              { group_id: params.target_id, messages: forwardNodes },
-              15000,
-            );
-            return {
-              output: `已向群 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点）`,
-            };
-          } catch (e) { lastErr = e; }
-          try {
-            await (client as any).sendWithResponse(
-              "send_forward_msg",
-              { group_id: params.target_id, messages: forwardNodes },
-              15000,
-            );
-            return {
-              output: `已向群 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点，fallback）`,
-            };
-          } catch (e) {
-            return { output: `合并转发失败（两种 API 均失败）：\n- send_group_forward_msg: ${String(lastErr)}\n- send_forward_msg: ${String(e)}` };
-          }
+        // 群合并转发：先尝试 send_group_forward_msg，失败尝试 send_forward_msg
+        let lastErr: unknown;
+        try {
+          await (client as any).sendWithResponse("send_group_forward_msg", { group_id: params.target_id, messages: forwardNodes }, 15000);
+          return toolResult(`已向群 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点）`);
+        } catch (e) {
+          lastErr = e;
         }
+        try {
+          await (client as any).sendWithResponse("send_forward_msg", { group_id: params.target_id, messages: forwardNodes }, 15000);
+          return toolResult(`已向群 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点，fallback）`);
+        } catch (e) {
+          return toolResult(`合并转发失败（两种 API 均失败）：\n- send_group_forward_msg: ${String(lastErr)}\n- send_forward_msg: ${String(e)}`);
+        }
+      }
 
-        // 私聊合并转发
-        {
-          let lastErr: unknown;
-          try {
-            await (client as any).sendWithResponse(
-              "send_private_forward_msg",
-              { user_id: params.target_id, messages: forwardNodes },
-              15000,
-            );
-            return {
-              output: `已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点）`,
-            };
-          } catch (e) { lastErr = e; }
-          try {
-            await (client as any).sendWithResponse(
-              "send_forward_msg",
-              { user_id: params.target_id, messages: forwardNodes },
-              15000,
-            );
-            return {
-              output: `已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点，fallback）`,
-            };
-          } catch (e) {
-            return { output: `合并转发失败（两种 API 均失败）：\n- send_private_forward_msg: ${String(lastErr)}\n- send_forward_msg: ${String(e)}` };
-          }
+      // 私聊合并转发
+      {
+        let lastErr: unknown;
+        try {
+          await (client as any).sendWithResponse("send_private_forward_msg", { user_id: params.target_id, messages: forwardNodes }, 15000);
+          return toolResult(`已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点）`);
+        } catch (e) {
+          lastErr = e;
         }
+        try {
+          await (client as any).sendWithResponse("send_forward_msg", { user_id: params.target_id, messages: forwardNodes }, 15000);
+          return toolResult(`已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点，fallback）`);
+        } catch (e) {
+          return toolResult(`合并转发失败（两种 API 均失败）：\n- send_private_forward_msg: ${String(lastErr)}\n- send_forward_msg: ${String(e)}`);
+        }
+      }
     },
   };
 }
