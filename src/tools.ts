@@ -192,8 +192,11 @@ const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
  */
 function resolveFilePath(rawPath: string): string {
   const resolved = isAbsolute(rawPath) ? resolve(rawPath) : resolve(WORKSPACE_DIR, rawPath);
-  // 路径遍历防护：必须在允许的目录内
-  if (!resolved.startsWith(WORKSPACE_DIR) && !resolved.startsWith(BROWSER_MEDIA_DIR)) {
+  // 路径遍历防护：追加 "/" 防止前缀绕过（如 workspace-evil/）
+  const wsPrefix = WORKSPACE_DIR + "/";
+  const bmPrefix = BROWSER_MEDIA_DIR + "/";
+  if (resolved !== WORKSPACE_DIR && !resolved.startsWith(wsPrefix) &&
+      resolved !== BROWSER_MEDIA_DIR && !resolved.startsWith(bmPrefix)) {
     throw new Error(`路径安全限制：${rawPath} 超出允许的目录范围`);
   }
   return resolved;
