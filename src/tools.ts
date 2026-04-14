@@ -219,12 +219,22 @@ async function resolveMediaContent(content: string): Promise<string> {
     if (existsSync(filePath)) {
       try {
         const buffer = await readFile(filePath);
-        if (!isValidImageBuffer(buffer)) {
-          replacements.push({ full: match[0], replacement: `[图片无效：${rawPath} 不是有效的图片文件（${buffer.length} 字节）]` });
+        if (isValidImageBuffer(buffer)) {
+          // 直接是二进制图片
+          const base64 = buffer.toString("base64");
+          replacements.push({ full: match[0], replacement: `[CQ:image,file=base64://${base64}]` });
           continue;
         }
-        const base64 = buffer.toString("base64");
-        replacements.push({ full: match[0], replacement: `[CQ:image,file=base64://${base64}]` });
+        // Agent 可能用 write 工具把 base64 文本写入了文件（未解码），尝试当 base64 解码
+        const text = buffer.toString("utf-8").trim();
+        if (/^[A-Za-z0-9+/]+=*$/.test(text) && text.length > 100) {
+          const decoded = Buffer.from(text, "base64");
+          if (isValidImageBuffer(decoded)) {
+            replacements.push({ full: match[0], replacement: `[CQ:image,file=base64://${text}]` });
+            continue;
+          }
+        }
+        replacements.push({ full: match[0], replacement: `[图片无效：${rawPath} 不是有效的图片文件（${buffer.length} 字节）]` });
       } catch {
         // 读取失败保留原文
       }
@@ -256,9 +266,19 @@ async function resolveForwardNodeContent(content: string): Promise<string | Arra
 
   try {
     const buffer = await readFile(filePath);
-    if (!isValidImageBuffer(buffer)) return `[图片无效：${rawPath} 不是有效的图片文件（${buffer.length} 字节）]`;
-    const base64 = buffer.toString("base64");
-    return [{ type: "image", data: { file: `base64://${base64}` } }];
+    if (isValidImageBuffer(buffer)) {
+      const base64 = buffer.toString("base64");
+      return [{ type: "image", data: { file: `base64://${base64}` } }];
+    }
+    // 尝试当 base64 文本解码
+    const text = buffer.toString("utf-8").trim();
+    if (/^[A-Za-z0-9+/]+=*$/.test(text) && text.length > 100) {
+      const decoded = Buffer.from(text, "base64");
+      if (isValidImageBuffer(decoded)) {
+        return [{ type: "image", data: { file: `base64://${text}` } }];
+      }
+    }
+    return `[图片无效：${rawPath} 不是有效的图片文件（${buffer.length} 字节）]`;
   } catch {
     return content;
   }
