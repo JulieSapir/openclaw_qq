@@ -382,7 +382,7 @@ export class OneBotClient extends EventEmitter {
             if (resp.status === "ok") {
               resolve(resp.data);
             } else {
-              reject(new Error(resp.msg || "API request failed"));
+              reject(new Error(resp.message || resp.msg || resp.wording || "API request failed"));
             }
           }
         } catch (err) {

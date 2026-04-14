@@ -185,6 +185,24 @@ function resolveFilePath(rawPath: string): string {
 }
 
 /**
+ * PNG/JPEG/GIF/WEBP 文件头 magic bytes 检查
+ */
+const IMAGE_SIGNATURES: Array<{ ext: string; header: number[] }> = [
+  { ext: "png", header: [0x89, 0x50, 0x4e, 0x47] },
+  { ext: "jpeg", header: [0xff, 0xd8, 0xff] },
+  { ext: "gif", header: [0x47, 0x49, 0x46] },
+  { ext: "webp", header: [0x52, 0x49, 0x46, 0x46] },
+  { ext: "bmp", header: [0x42, 0x4d] },
+];
+
+function isValidImageBuffer(buffer: Buffer): boolean {
+  if (buffer.length < 8) return false;
+  return IMAGE_SIGNATURES.some(sig =>
+    sig.header.every((byte, i) => buffer[i] === byte)
+  );
+}
+
+/**
  * 将 MEDIA: 前缀的文件路径转换为 base64 图片 CQ 码。
  * NapCat 运行在远程 VPS，无法访问容器本地文件，
  * 因此需要将图片读取为 base64 再发送。
@@ -201,6 +219,10 @@ async function resolveMediaContent(content: string): Promise<string> {
     if (existsSync(filePath)) {
       try {
         const buffer = await readFile(filePath);
+        if (!isValidImageBuffer(buffer)) {
+          replacements.push({ full: match[0], replacement: `[图片无效：${rawPath} 不是有效的图片文件（${buffer.length} 字节）]` });
+          continue;
+        }
         const base64 = buffer.toString("base64");
         replacements.push({ full: match[0], replacement: `[CQ:image,file=base64://${base64}]` });
       } catch {
@@ -234,6 +256,7 @@ async function resolveForwardNodeContent(content: string): Promise<string | Arra
 
   try {
     const buffer = await readFile(filePath);
+    if (!isValidImageBuffer(buffer)) return `[图片无效：${rawPath} 不是有效的图片文件（${buffer.length} 字节）]`;
     const base64 = buffer.toString("base64");
     return [{ type: "image", data: { file: `base64://${base64}` } }];
   } catch {
