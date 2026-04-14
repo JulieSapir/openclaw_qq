@@ -9,6 +9,8 @@
 import {
   getRegisteredClient,
 } from "./runtime.js";
+import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 
 // ─── JSON Schema 定义（不依赖 @sinclair/typebox）───────────
 
@@ -121,19 +123,47 @@ interface QQForwardMessageParams {
 // ─── 辅助函数 ──────────────────────────────────────────────
 
 /**
- * 将 MEDIA: 前缀的文件路径转换为 CQ 码图片消息。
+ * 将 MEDIA: 前缀的文件路径转换为 base64 图片 URL。
+ * NapCat 运行在远程 VPS，无法访问容器本地文件，
+ * 因此需要将图片读取为 base64 再发送。
  * 如果内容不含 MEDIA: 前缀，原样返回文本。
  */
-function resolveMediaContent(content: string): string {
-  // 匹配 MEDIA:/path/to/file 格式
+async function resolveMediaContent(content: string): Promise<string> {
   const mediaPrefix = "MEDIA:";
   if (!content.startsWith(mediaPrefix)) return content;
 
   const filePath = content.slice(mediaPrefix.length).trim();
-  if (!filePath) return content;
+  if (!filePath || !existsSync(filePath)) return content;
 
-  // 转换为 CQ 码图片格式，OneBot 通过 file:// 协议读取本地文件
-  return `[CQ:image,file=file://${filePath}]`;
+  try {
+    const buffer = await readFile(filePath);
+    const base64 = buffer.toString("base64");
+    return `[CQ:image,file=base64://${base64}]`;
+  } catch {
+    // 如果读取失败，尝试 file:// 协议（仅在 NapCat 与容器同机时有效）
+    return `[CQ:image,file=file://${filePath}]`;
+  }
+}
+
+/**
+ * 将 content 转换为合并转发节点的消息段数组格式。
+ * OneBot 合并转发节点的 content 支持消息段数组，
+ * 这比 CQ 码字符串兼容性更好。
+ */
+async function resolveForwardNodeContent(content: string): Promise<string | Array<{ type: string; data: Record<string, unknown> }>> {
+  const mediaPrefix = "MEDIA:";
+  if (!content.startsWith(mediaPrefix)) return content;
+
+  const filePath = content.slice(mediaPrefix.length).trim();
+  if (!filePath || !existsSync(filePath)) return content;
+
+  try {
+    const buffer = await readFile(filePath);
+    const base64 = buffer.toString("base64");
+    return [{ type: "image", data: { file: `base64://${base64}` } }];
+  } catch {
+    return content;
+  }
 }
 
 function resolveClient(accountId?: string) {
@@ -167,8 +197,8 @@ export function createQQSendMessageTool(_ctx?: any) {
       const { client, error } = resolveClient();
       if (!client) return { output: error };
 
-      // 统一处理 MEDIA: 前缀
-      const resolvedMessage = resolveMediaContent(params.message);
+      // 统一处理 MEDIA: 前缀（异步转 base64）
+      const resolvedMessage = await resolveMediaContent(params.message);
 
       try {
         if (params.target_type === "group") {
@@ -297,56 +327,67 @@ export function createQQForwardMessageTool(_ctx?: any) {
       const selfId = client.getSelfId();
       const defaultUin = selfId ? String(selfId) : "10000";
 
-      const forwardNodes = params.messages.map((msg) => ({
+      const forwardNodes = await Promise.all(params.messages.map(async (msg) => ({
         type: "node" as const,
         data: {
           name: msg.name,
           uin: defaultUin,
-          content: resolveMediaContent(msg.content),
+          content: await resolveForwardNodeContent(msg.content),
         },
-      }));
+      })));
 
       try {
         if (params.target_type === "group") {
-          // 群合并转发
+          // 群合并转发：先尝试 send_group_forward_msg，失败尝试 send_forward_msg
+          let lastErr: unknown;
           try {
             await (client as any).sendWithResponse(
               "send_group_forward_msg",
               { group_id: params.target_id, messages: forwardNodes },
               15000,
             );
-          } catch {
+            return {
+              output: `已向群 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点）`,
+            };
+          } catch (e) { lastErr = e; }
+          try {
             await (client as any).sendWithResponse(
               "send_forward_msg",
               { group_id: params.target_id, messages: forwardNodes },
               15000,
             );
+            return {
+              output: `已向群 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点，fallback）`,
+            };
+          } catch (e) {
+            return { output: `合并转发失败（两种 API 均失败）：\n- send_group_forward_msg: ${String(lastErr)}\n- send_forward_msg: ${String(e)}` };
           }
-          return {
-            output: `已向群 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点）`,
-          };
         }
 
         // 私聊合并转发
+        let lastErr: unknown;
         try {
           await (client as any).sendWithResponse(
             "send_private_forward_msg",
             { user_id: params.target_id, messages: forwardNodes },
             15000,
           );
-        } catch {
+          return {
+            output: `已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点）`,
+          };
+        } catch (e) { lastErr = e; }
+        try {
           await (client as any).sendWithResponse(
             "send_forward_msg",
             { user_id: params.target_id, messages: forwardNodes },
             15000,
           );
+          return {
+            output: `已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点，fallback）`,
+          };
+        } catch (e) {
+          return { output: `合并转发失败（两种 API 均失败）：\n- send_private_forward_msg: ${String(lastErr)}\n- send_forward_msg: ${String(e)}` };
         }
-        return {
-          output: `已向用户 ${params.target_id} 发送合并转发消息（${forwardNodes.length} 条节点）`,
-        };
-      } catch (err) {
-        return { output: `合并转发失败：${String(err)}` };
-      }
     },
   };
 }
