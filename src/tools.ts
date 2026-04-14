@@ -227,6 +227,28 @@ function truncateForToolResponse(data: unknown, maxChars = 8000): string {
   return json.slice(0, maxChars) + "\n... (已截断)";
 }
 
+/** 将消息段数组/CQ码/字符串精简为可读摘要 */
+function summarizeMessageContent(msg: unknown): string {
+  if (typeof msg === "string") return msg.slice(0, 200);
+  if (!Array.isArray(msg)) return String(msg ?? "").slice(0, 200);
+  return msg.map((seg: any) => {
+    switch (seg?.type) {
+      case "text": return seg.data?.text ?? "";
+      case "image": return "[图片]";
+      case "face": return `[表情:${seg.data?.id ?? "?"}]`;
+      case "at": return `@${seg.data?.qq ?? "?"}`;
+      case "reply": return `[回复:${seg.data?.id ?? "?"}]`;
+      case "record": return "[语音]";
+      case "video": return "[视频]";
+      case "file": return `[文件:${seg.data?.name ?? seg.data?.file ?? "?"}]`;
+      case "forward": return "[合并转发]";
+      case "json": return "[JSON卡片]";
+      case "xml": return "[XML卡片]";
+      default: return `[${seg?.type ?? "?"}]`;
+    }
+  }).join("").slice(0, 300);
+}
+
 /** 统一工具返回值格式，符合 AgentToolResult 规范 */
 function toolResult(text: string, details?: unknown) {
   return { content: [{ type: "text" as const, text }], details: details ?? {} };
@@ -317,9 +339,19 @@ export function createQQGetContextTool(_ctx?: any) {
             if (params.count) historyParams.count = Math.min(params.count, 50);
             if (params.reverse_order) historyParams.reverseOrder = params.reverse_order;
             const history = await (client as any).sendWithResponse("get_group_msg_history", historyParams, 15000);
-            const messages = history?.messages ?? history;
-            const count = Array.isArray(messages) ? messages.length : "?";
-            return toolResult(`群 ${params.group_id} 消息历史（${count} 条）：\n${truncateForToolResponse(messages)}`, messages);
+            const rawMessages = history?.messages ?? history;
+            const msgCount = Array.isArray(rawMessages) ? rawMessages.length : "?";
+            // 精简消息，只保留关键字段防止 Agent 上下文溢出
+            const condensed = Array.isArray(rawMessages)
+              ? rawMessages.map((m: any) => ({
+                  message_id: m.message_id,
+                  sender: m.sender?.nickname || m.sender?.card || m.user_id,
+                  user_id: m.user_id || m.sender?.user_id,
+                  time: m.time,
+                  content: summarizeMessageContent(m.message ?? m.raw_message),
+                }))
+              : rawMessages;
+            return toolResult(`群 ${params.group_id} 消息历史（${msgCount} 条）：\n${truncateForToolResponse(condensed)}`, condensed);
           }
           case "group_info": {
             if (!params.group_id) return toolResult("group_info 需要 group_id 参数");
