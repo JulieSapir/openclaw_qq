@@ -9,6 +9,8 @@
 import { getRegisteredClient } from "./runtime.js";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { resolve, isAbsolute } from "node:path";
+import { homedir } from "node:os";
 
 // ─── JSON Schema 定义（不依赖 @sinclair/typebox）───────────
 
@@ -170,26 +172,50 @@ interface QQBatchRecallMessagesParams {
 // ─── 辅助函数 ──────────────────────────────────────────────
 
 /**
- * 将 MEDIA: 前缀的文件路径转换为 base64 图片 URL。
+ * workspace 目录：Agent 的工作目录，MEDIA: 相对路径基于此解析
+ */
+const WORKSPACE_DIR = resolve(homedir(), ".openclaw", "workspace");
+
+/**
+ * 解析文件路径：相对路径基于 workspace 目录，绝对路径直接使用
+ */
+function resolveFilePath(rawPath: string): string {
+  if (isAbsolute(rawPath)) return rawPath;
+  return resolve(WORKSPACE_DIR, rawPath);
+}
+
+/**
+ * 将 MEDIA: 前缀的文件路径转换为 base64 图片 CQ 码。
  * NapCat 运行在远程 VPS，无法访问容器本地文件，
  * 因此需要将图片读取为 base64 再发送。
- * 如果内容不含 MEDIA: 前缀，原样返回文本。
+ * 支持整段 MEDIA: 前缀，也支持文本中嵌入的 MEDIA: 前缀。
  */
 async function resolveMediaContent(content: string): Promise<string> {
-  const mediaPrefix = "MEDIA:";
-  if (!content.startsWith(mediaPrefix)) return content;
+  const mediaRegex = /MEDIA:(\S+)/g;
+  let match: RegExpExecArray | null;
+  const replacements: Array<{ full: string; replacement: string }> = [];
 
-  const filePath = content.slice(mediaPrefix.length).trim();
-  if (!filePath || !existsSync(filePath)) return content;
-
-  try {
-    const buffer = await readFile(filePath);
-    const base64 = buffer.toString("base64");
-    return `[CQ:image,file=base64://${base64}]`;
-  } catch {
-    // 如果读取失败，尝试 file:// 协议（仅在 NapCat 与容器同机时有效）
-    return `[CQ:image,file=file://${filePath}]`;
+  while ((match = mediaRegex.exec(content)) !== null) {
+    const rawPath = match[1];
+    const filePath = resolveFilePath(rawPath);
+    if (existsSync(filePath)) {
+      try {
+        const buffer = await readFile(filePath);
+        const base64 = buffer.toString("base64");
+        replacements.push({ full: match[0], replacement: `[CQ:image,file=base64://${base64}]` });
+      } catch {
+        // 读取失败保留原文
+      }
+    }
   }
+
+  if (replacements.length === 0) return content;
+
+  let result = content;
+  for (const { full, replacement } of replacements) {
+    result = result.replace(full, replacement);
+  }
+  return result;
 }
 
 /**
@@ -198,11 +224,13 @@ async function resolveMediaContent(content: string): Promise<string> {
  * 这比 CQ 码字符串兼容性更好。
  */
 async function resolveForwardNodeContent(content: string): Promise<string | Array<{ type: string; data: Record<string, unknown> }>> {
-  const mediaPrefix = "MEDIA:";
-  if (!content.startsWith(mediaPrefix)) return content;
+  const mediaRegex = /MEDIA:(\S+)/;
+  const match = mediaRegex.exec(content);
+  if (!match) return content;
 
-  const filePath = content.slice(mediaPrefix.length).trim();
-  if (!filePath || !existsSync(filePath)) return content;
+  const rawPath = match[1];
+  const filePath = resolveFilePath(rawPath);
+  if (!existsSync(filePath)) return content;
 
   try {
     const buffer = await readFile(filePath);
