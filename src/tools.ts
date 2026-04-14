@@ -28,16 +28,12 @@ const QQSendMessageSchema = {
     },
     message: {
       type: "string" as const,
-      description: "要发送的消息文本内容。纯发图片时可留空，改用 image_base64 或 image_path 参数。",
+      description: "要发送的消息文本内容。纯发图片时可留空，改用 image_path 参数。",
       maxLength: 4500,
-    },
-    image_base64: {
-      type: "string" as const,
-      description: "图片的 base64 编码数据（不含 data: 前缀）。browser 截图返回的内联图片可直接填入此参数。",
     },
     image_path: {
       type: "string" as const,
-      description: "图片文件的路径。可以用 MEDIA:browser:latest 发送最近一次 browser 截图，也可以用绝对或相对路径指定文件。",
+      description: "图片文件路径。填 'browser:latest' 发送最近一次 browser 截图，或填绝对/相对路径指定图片文件。browser 截图后直接用 'browser:latest' 即可，不要用 write 写文件。",
     },
     forward: {
       type: "boolean" as const,
@@ -150,7 +146,6 @@ interface QQSendMessageParams {
   target_type: "group" | "private";
   target_id: number;
   message: string;
-  image_base64?: string;
   image_path?: string;
   forward?: boolean;
   forward_node_name?: string;
@@ -387,15 +382,15 @@ export function createQQSendMessageTool(_ctx?: any) {
   return {
     name: "qq_send_message",
     label: "QQ 发送消息",
-    description: "向 QQ 群或私聊主动发送消息。支持文本、图片和混合消息。发送 browser 截图时优先使用 image_base64 参数（直接传 base64 数据）。仅管理员可触发。",
+    description: "向 QQ 群或私聊主动发送消息。支持文本、图片和混合消息。发送 browser 截图时使用 image_path='browser:latest'。仅管理员可触发。",
     parameters: QQSendMessageSchema,
     execute: async (_toolCallId: string, rawParams: unknown) => {
       const params = rawParams as QQSendMessageParams;
       const { client, error } = resolveClient();
       if (!client) return toolResult(error!);
 
-      if (!params.message && !params.image_base64 && !params.image_path) {
-        return toolResult("message、image_base64、image_path 至少需要提供一个");
+      if (!params.message && !params.image_path) {
+        return toolResult("message 和 image_path 至少需要提供一个");
       }
 
       // 构建最终消息
@@ -411,15 +406,6 @@ export function createQQSendMessageTool(_ctx?: any) {
       if (params.image_path) {
         const imgCQ = await resolveImagePath(params.image_path);
         parts.push(imgCQ);
-      }
-
-      // 处理 image_base64 参数
-      if (params.image_base64) {
-        const decoded = Buffer.from(params.image_base64, "base64");
-        if (!isValidImageBuffer(decoded)) {
-          return toolResult(`图片无效：base64 数据不是有效的图片格式（解码后 ${decoded.length} 字节）`);
-        }
-        parts.push(`[CQ:image,file=base64://${params.image_base64}]`);
       }
 
       resolvedMessage = parts.join("");
