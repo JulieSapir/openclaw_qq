@@ -301,14 +301,20 @@ async function resolveImagePath(imagePath: string): Promise<string> {
   if (imagePath === "browser:latest") {
     // 查找 browser 媒体目录中最新的文件
     if (!existsSync(BROWSER_MEDIA_DIR)) {
-      return "[错误：browser 媒体目录不存在，请先使用 browser 截图]";
+      return "[错误：browser 媒体目录不存在，请先使用 browser 的 screenshot action 截图]";
     }
     const { readdirSync, statSync } = require("node:fs");
     const files = (readdirSync(BROWSER_MEDIA_DIR) as string[])
       .map((name: string) => ({ name, mtime: statSync(resolve(BROWSER_MEDIA_DIR, name)).mtimeMs }))
       .sort((a: { mtime: number }, b: { mtime: number }) => b.mtime - a.mtime);
     if (files.length === 0) {
-      return "[错误：browser 媒体目录为空，请先使用 browser 截图]";
+      return "[错误：browser 媒体目录为空，请先使用 browser 的 screenshot action 截图]";
+    }
+    // 检查最新截图是否太旧（超过 5 分钟）
+    const ageMs = Date.now() - files[0].mtime;
+    const ageStr = `${Math.round(ageMs / 1000)}秒前`;
+    if (ageMs > 5 * 60 * 1000) {
+      return `[警告：最新截图（${files[0].name}）是 ${ageStr} 的，可能已过时。请先使用 browser 的 screenshot action（不是 snapshot）截新图，然后再用 browser:latest 发送]`;
     }
     filePath = resolve(BROWSER_MEDIA_DIR, files[0].name);
   } else {
