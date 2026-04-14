@@ -7,13 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 declare const process: any;
-import {
-  type ChannelPlugin,
-  type ChannelAccountSnapshot,
-  type ChannelSetupInput,
-  type OpenClawConfig,
-  type ReplyPayload,
-} from "openclaw/plugin-sdk";
+import { type ChannelPlugin, type ChannelAccountSnapshot, type ChannelSetupInput, type OpenClawConfig, type ReplyPayload } from "openclaw/plugin-sdk";
 // 以下三个函数在运行时由 SDK 导出，但本地类型声明不完整
 // @ts-expect-error SDK 类型声明未包含 buildChannelConfigSchema
 import { buildChannelConfigSchema } from "openclaw/plugin-sdk";

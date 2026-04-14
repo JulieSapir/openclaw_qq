@@ -180,23 +180,29 @@ interface QQBatchRecallMessagesParams {
  * workspace 目录：Agent 的工作目录，MEDIA: 相对路径基于此解析
  */
 const WORKSPACE_DIR = resolve(homedir(), ".openclaw", "workspace");
-const BROWSER_MEDIA_DIR = resolve(homedir(), ".openclaw", "media", "browser");
+const MEDIA_DIR = resolve(homedir(), ".openclaw", "media");
+const BROWSER_MEDIA_DIR = resolve(MEDIA_DIR, "browser");
 
 /** 图片文件最大大小：10MB */
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 
 /**
+ * 允许访问的目录白名单（解析后路径必须位于其中之一）。
+ * - WORKSPACE_DIR: Agent 工作目录（相对路径基于此解析）
+ * - MEDIA_DIR: 所有媒体文件（browser 截图、QQ 入站图片等）
+ */
+const ALLOWED_DIRS = [WORKSPACE_DIR, MEDIA_DIR];
+
+/**
  * 解析文件路径：相对路径基于 workspace 目录，绝对路径直接使用。
- * 安全约束：解析后的路径必须位于 WORKSPACE_DIR 或 BROWSER_MEDIA_DIR 内，
+ * 安全约束：解析后的路径必须位于白名单目录内，
  * 防止路径遍历攻击（如 ../../etc/passwd）。
  */
 function resolveFilePath(rawPath: string): string {
   const resolved = isAbsolute(rawPath) ? resolve(rawPath) : resolve(WORKSPACE_DIR, rawPath);
   // 路径遍历防护：追加 "/" 防止前缀绕过（如 workspace-evil/）
-  const wsPrefix = WORKSPACE_DIR + "/";
-  const bmPrefix = BROWSER_MEDIA_DIR + "/";
-  if (resolved !== WORKSPACE_DIR && !resolved.startsWith(wsPrefix) &&
-      resolved !== BROWSER_MEDIA_DIR && !resolved.startsWith(bmPrefix)) {
+  const allowed = ALLOWED_DIRS.some(dir => resolved === dir || resolved.startsWith(dir + "/"));
+  if (!allowed) {
     throw new Error(`路径安全限制：${rawPath} 超出允许的目录范围`);
   }
   return resolved;
@@ -215,9 +221,7 @@ const IMAGE_SIGNATURES: Array<{ ext: string; header: number[] }> = [
 
 function isValidImageBuffer(buffer: Buffer): boolean {
   if (buffer.length < 8) return false;
-  return IMAGE_SIGNATURES.some(sig =>
-    sig.header.every((byte, i) => buffer[i] === byte)
-  );
+  return IMAGE_SIGNATURES.some((sig) => sig.header.every((byte, i) => buffer[i] === byte));
 }
 
 /**
@@ -362,22 +366,37 @@ function truncateForToolResponse(data: unknown, maxChars = 8000): string {
 function summarizeMessageContent(msg: unknown): string {
   if (typeof msg === "string") return msg.slice(0, 200);
   if (!Array.isArray(msg)) return String(msg ?? "").slice(0, 200);
-  return msg.map((seg: any) => {
-    switch (seg?.type) {
-      case "text": return seg.data?.text ?? "";
-      case "image": return "[图片]";
-      case "face": return `[表情:${seg.data?.id ?? "?"}]`;
-      case "at": return `@${seg.data?.qq ?? "?"}`;
-      case "reply": return `[回复:${seg.data?.id ?? "?"}]`;
-      case "record": return "[语音]";
-      case "video": return "[视频]";
-      case "file": return `[文件:${seg.data?.name ?? seg.data?.file ?? "?"}]`;
-      case "forward": return "[合并转发]";
-      case "json": return "[JSON卡片]";
-      case "xml": return "[XML卡片]";
-      default: return `[${seg?.type ?? "?"}]`;
-    }
-  }).join("").slice(0, 300);
+  return msg
+    .map((seg: any) => {
+      switch (seg?.type) {
+        case "text":
+          return seg.data?.text ?? "";
+        case "image":
+          return "[图片]";
+        case "face":
+          return `[表情:${seg.data?.id ?? "?"}]`;
+        case "at":
+          return `@${seg.data?.qq ?? "?"}`;
+        case "reply":
+          return `[回复:${seg.data?.id ?? "?"}]`;
+        case "record":
+          return "[语音]";
+        case "video":
+          return "[视频]";
+        case "file":
+          return `[文件:${seg.data?.name ?? seg.data?.file ?? "?"}]`;
+        case "forward":
+          return "[合并转发]";
+        case "json":
+          return "[JSON卡片]";
+        case "xml":
+          return "[XML卡片]";
+        default:
+          return `[${seg?.type ?? "?"}]`;
+      }
+    })
+    .join("")
+    .slice(0, 300);
 }
 
 /** 统一工具返回值格式，符合 AgentToolResult 规范 */
@@ -626,13 +645,10 @@ export function createQQBatchRecallMessagesTool(_ctx?: any) {
         }
       }
 
-      const succeeded = results.filter(r => r.ok).length;
-      const failed = results.filter(r => !r.ok).length;
-      const summary = results.map(r => r.ok ? `✅ ${r.id}` : `❌ ${r.id}: ${r.error}`).join("\n");
-      return toolResult(
-        `批量撤回完成：${succeeded} 成功，${failed} 失败\n${summary}`,
-        { succeeded, failed, results },
-      );
+      const succeeded = results.filter((r) => r.ok).length;
+      const failed = results.filter((r) => !r.ok).length;
+      const summary = results.map((r) => (r.ok ? `✅ ${r.id}` : `❌ ${r.id}: ${r.error}`)).join("\n");
+      return toolResult(`批量撤回完成：${succeeded} 成功，${failed} 失败\n${summary}`, { succeeded, failed, results });
     },
   };
 }
