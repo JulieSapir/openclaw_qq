@@ -28,7 +28,7 @@ const QQSendMessageSchema = {
     },
     message: {
       type: "string" as const,
-      description: "要发送的消息文本内容。发送图片时使用 MEDIA: 前缀加绝对路径，例如 'MEDIA:/path/to/image.png'，系统会自动将图片转为 base64 发送。可以混合文本和图片，例如 '这是截图 MEDIA:/tmp/screenshot.png 请查看'。",
+      description: "要发送的消息文本内容。发送图片时使用 MEDIA: 前缀加文件路径，例如 'MEDIA:/home/node/.openclaw/media/browser/xxx.png'。如果是 browser 截图，直接使用 browser 返回的原始文件路径，不要用 write 工具重新写入文件（会导致截断）。相对路径会基于 workspace 目录解析。",
       maxLength: 4500,
     },
     forward: {
