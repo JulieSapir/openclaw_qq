@@ -59,6 +59,20 @@ const QQGetContextSchema = {
       type: "string" as const,
       description: "消息 ID（get_message 时必填）",
     },
+    count: {
+      type: "number" as const,
+      description: "获取消息数量（group_history 时可选，默认 20，最大 50）",
+      minimum: 1,
+      maximum: 50,
+    },
+    message_seq: {
+      type: "string" as const,
+      description: "起始消息序号（group_history 时可选，不传则获取最新消息）。可通过 get_message 获取消息的 seq",
+    },
+    reverse_order: {
+      type: "boolean" as const,
+      description: "是否倒序返回（group_history 时可选，默认 false）",
+    },
   },
   required: ["action"],
   additionalProperties: false,
@@ -134,6 +148,9 @@ interface QQGetContextParams {
   action: "group_list" | "friend_list" | "group_history" | "group_info" | "get_message";
   group_id?: number;
   message_id?: string;
+  count?: number;
+  message_seq?: string;
+  reverse_order?: boolean;
 }
 
 interface QQForwardMessageParams {
@@ -295,8 +312,14 @@ export function createQQGetContextTool(_ctx?: any) {
           }
           case "group_history": {
             if (!params.group_id) return toolResult("group_history 需要 group_id 参数");
-            const history = await client.getGroupMsgHistory(params.group_id);
-            return toolResult(`群 ${params.group_id} 消息历史：\n${truncateForToolResponse(history)}`, history);
+            const historyParams: Record<string, unknown> = { group_id: params.group_id };
+            if (params.message_seq) historyParams.message_seq = params.message_seq;
+            if (params.count) historyParams.count = Math.min(params.count, 50);
+            if (params.reverse_order) historyParams.reverseOrder = params.reverse_order;
+            const history = await (client as any).sendWithResponse("get_group_msg_history", historyParams, 15000);
+            const messages = history?.messages ?? history;
+            const count = Array.isArray(messages) ? messages.length : "?";
+            return toolResult(`群 ${params.group_id} 消息历史（${count} 条）：\n${truncateForToolResponse(messages)}`, messages);
           }
           case "group_info": {
             if (!params.group_id) return toolResult("group_info 需要 group_id 参数");
