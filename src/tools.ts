@@ -193,7 +193,7 @@ const ALLOWED_DIRS = [WORKSPACE_DIR, MEDIA_DIR];
 function resolveFilePath(rawPath: string): string {
   const resolved = isAbsolute(rawPath) ? resolve(rawPath) : resolve(WORKSPACE_DIR, rawPath);
   // 路径遍历防护：追加 "/" 防止前缀绕过（如 workspace-evil/）
-  const allowed = ALLOWED_DIRS.some(dir => resolved === dir || resolved.startsWith(dir + "/"));
+  const allowed = ALLOWED_DIRS.some((dir) => resolved === dir || resolved.startsWith(dir + "/"));
   if (!allowed) {
     throw new Error(`路径安全限制：${rawPath} 超出允许的目录范围`);
   }
